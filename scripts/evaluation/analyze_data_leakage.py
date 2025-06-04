@@ -300,7 +300,7 @@ def generate_recommendations(df):
     console.print("2. 确保标签构造只基于委托后的真实结果（不是预测结果）")
     console.print("3. 实施严格的时间序列验证（训练集日期 < 验证集日期）")
     console.print("4. 添加正则化和早停，防止过拟合")
-    console.print("5. 使用我提供的修复版训练脚本: scripts/train/train_baseline_fixed.py")
+    console.print("5. 使用整理后的训练脚本: scripts/train/train_baseline.py")
 
 def main():
     parser = argparse.ArgumentParser(description="数据泄露诊断工具")
