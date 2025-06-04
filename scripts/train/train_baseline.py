@@ -1,105 +1,131 @@
 #!/usr/bin/env python
 # -*- coding: utf-8 -*-
 """
-train_baseline.py
-──────────────────
-从 features_select / labels_select 读取 Parquet，
-训练 LightGBM 并在时间上独立的验证集评估 PR-AUC 与 Precision@TopK。
+LightGBM Training Pipeline
+---------------------------------
+• 读取 features_select/ 与 labels_select/ 下的 Parquet
+• 通过日期正则切分 train / valid
+• is_unbalance / scale_pos_weight 二选一处理类别失衡
+• 支持 GPU (device_type="gpu")，自动回退 CPU
 """
 
-import glob, pandas as pd, numpy as np, lightgbm as lgb
-from pathlib import Path
-from sklearn.metrics import average_precision_score, precision_score
-import re
-import sys
+import argparse, glob, os, re, sys, time
+import pandas as pd
+import lightgbm as lgb
+from sklearn.metrics import average_precision_score
 
-# 检查 GPU 支持
-try:
-    lgb.basic._LIB.LGBM_GetLastError()
-    print("LightGBM GPU 支持检查...")
-    params = {'device_type': 'gpu'}
-    lgb.basic._LIB.LGBM_GetLastError()
-    print("✓ LightGBM GPU 支持已启用")
-except Exception as e:
-    print("✗ LightGBM GPU 支持未启用")
-    print("请安装支持 GPU 的 LightGBM 版本:")
-    print("1. 使用 pip: pip install lightgbm --install-option=--gpu")
-    print("2. 或使用 conda: conda install -c conda-forge lightgbm-gpu")
-    sys.exit(1)
+# ---------- Utils ----------------------------------------------------------
+def load_parquets(patterns):
+    files = []
+    for pat in patterns:
+        files.extend(sorted(glob.glob(pat)))
+    if not files:
+        raise FileNotFoundError(f"No file matched {patterns}")
+    return pd.concat([pd.read_parquet(f) for f in files], ignore_index=True)
 
-FEAT_DIR = Path("/obs/users/fenglang/general/Spoofing Detect/data/features_select")
-LBL_DIR  = Path("/obs/users/fenglang/general/Spoofing Detect/data/labels_select")
+def split_by_date(df, regex):
+    mask = df["自然日"].astype(str).str.contains(regex)
+    return df[mask], df[~mask]
 
-def load(month_pattern: str):
-    """加载特征和标签文件，支持正则表达式匹配月份"""
-    # 获取所有特征文件
-    all_feat_files = glob.glob(str(FEAT_DIR / "X_*.parquet"))
+def precision_at_k(y_true, y_score, k_ratio=0.001):
+    k = max(1, int(len(y_true) * k_ratio))
+    top_k_idx = y_score.argsort()[::-1][:k]
+    return y_true.iloc[top_k_idx].mean()
+
+# ---------- Main -----------------------------------------------------------
+def main():
+    parser = argparse.ArgumentParser()
+    parser.add_argument("--data_root", required=True, help="根目录，包含 features_select/ labels_select/")
+    parser.add_argument("--train_regex", default="202503|202504", help="训练集日期正则")
+    parser.add_argument("--valid_regex", default="202505", help="验证集日期正则")
+    parser.add_argument("--device", choices=["gpu", "cpu"], default="gpu")
+    parser.add_argument("--is_unbalance", type=bool, default=True)
+    parser.add_argument("--scale_pos_weight", type=float, default=None)
+    parser.add_argument("--learning_rate", type=float, default=0.05)
+    parser.add_argument("--num_leaves", type=int, default=63)
+    parser.add_argument("--n_estimators", type=int, default=3000)
+    parser.add_argument("--early_stop", type=int, default=200)
+    args = parser.parse_args()
+
+    t0 = time.time()
+    feat_pats = [os.path.join(args.data_root, "features_select", "X_*.parquet")]
+    lab_pats  = [os.path.join(args.data_root, "labels_select", "labels_*.parquet")]
+    df_feat = load_parquets(feat_pats)
+    df_lab  = load_parquets(lab_pats)
+    df = df_feat.merge(df_lab, on=["自然日", "ticker", "交易所委托号"], how="inner", validate="one_to_one")
+
+    # ---- Train / Valid split
+    df_train, df_valid = split_by_date(df, args.train_regex)
+    df_valid, df_drop  = split_by_date(df_valid, args.valid_regex)  # valid=正则匹配
+    if df_valid.empty:
+        sys.exit("❌ 找不到验证集日期，请检查 --valid_regex")
     
-    # 使用正则表达式过滤文件
-    feat_files = [f for f in all_feat_files if re.search(f"X_2025{month_pattern}", f)]
+    # Drop identifier columns that shouldn't be features
+    id_cols = ["自然日", "ticker", "交易所委托号", "y_label"]
+    feature_cols = [col for col in df_train.columns if col not in id_cols]
     
-    if not feat_files:
-        raise ValueError(f"未找到匹配模式 '{month_pattern}' 的特征文件")
-    
-    lbl_files = [f.replace("features_select", "labels_select")
-                   .replace("X_", "labels_") for f in feat_files]
-    
-    print(f"加载文件数量: {len(feat_files)}")
-    print(f"文件示例: {feat_files[0]}")
-    
-    feats = pd.concat([pd.read_parquet(f) for f in feat_files])
-    lbls = pd.concat([pd.read_parquet(f) for f in lbl_files])
-    return feats.merge(lbls, on=["交易所委托号","ticker"])
+    X_tr = df_train[feature_cols]
+    y_tr = df_train["y_label"]
+    X_va = df_valid[feature_cols]
+    y_va = df_valid["y_label"]
 
-# 1) 数据切分  -------------------------------------------------
-train_df = load("(03|04)")   # 3月+4月
-val_df   = load("05")        # 5月
+    cat_cols = []  # No categorical features since we dropped identifier columns
 
-X_tr = train_df.drop(columns=["交易所委托号","ticker","y_label"])
-y_tr = train_df["y_label"]
-X_va = val_df.drop(columns=["交易所委托号","ticker","y_label"])
-y_va = val_df["y_label"]
+    # ---- LightGBM params
+    params = dict(
+        device_type=args.device,
+        boosting_type="gbdt",
+        learning_rate=args.learning_rate,
+        num_leaves=args.num_leaves,
+        n_estimators=args.n_estimators,
+        subsample=0.8,
+        colsample_bytree=0.8,
+        min_data_in_leaf=5,
+        min_sum_hessian_in_leaf=1e-3,
+        random_state=42,
+        categorical_feature=cat_cols,
+        early_stopping_rounds=args.early_stop,
+    )
+    if args.is_unbalance:
+        params["is_unbalance"] = True
+    if args.scale_pos_weight:
+        params["scale_pos_weight"] = args.scale_pos_weight
 
-print(f"训练集: {len(train_df):,} 样本, 正样本率: {y_tr.mean():.4%}")
-print(f"验证集: {len(val_df):,} 样本, 正样本率: {y_va.mean():.4%}")
+    clf = lgb.LGBMClassifier(**params)
+    clf.fit(
+        X_tr, y_tr,
+        eval_set=[(X_va, y_va)],
+        eval_metric="average_precision",  # PR-AUC
+    )
 
-# 2) LightGBM  -------------------------------------------------
-clf = lgb.LGBMClassifier(
-    n_estimators=600,
-    learning_rate=0.05,
-    # device_type="gpu",     
-    max_depth=-1,
-    subsample=0.8,
-    colsample_bytree=0.8,
-    scale_pos_weight = y_tr.value_counts()[0] / y_tr.value_counts()[1],
-    n_jobs = 4,
-    random_state = 42
-)
+    # ---- Metrics
+    y_prob = clf.predict_proba(X_va)[:, 1]
+    pr_auc = average_precision_score(y_va, y_prob)
+    prec_k = precision_at_k(y_va.reset_index(drop=True), pd.Series(y_prob), 0.001)
 
-# 打印 GPU 训练信息
-print("\n使用 GPU 训练 LightGBM...")
-print(f"训练数据大小: {X_tr.shape}")
-print(f"特征数量: {X_tr.shape[1]}")
-print(f"正样本数量: {y_tr.sum():,}")
-print(f"负样本数量: {len(y_tr) - y_tr.sum():,}")
+    print(f"\n🏁 Training done in {time.time()-t0:.1f}s")
+    print(f"Best iteration: {clf.best_iteration_}")
+    print(f"PR-AUC: {pr_auc:.6f}")
+    print(f"Precision@Top0.1%: {prec_k:.4f}")
 
-clf.fit(X_tr, y_tr)
+    # ---- Save model
+    model_path = os.path.join(args.data_root, "model_lgbm.txt")
+    clf.booster_.save_model(model_path)
+    print(f"Model saved to {model_path}")
 
-# 3) 评估  -----------------------------------------------------
-proba = clf.predict_proba(X_va)[:,1]
-pr_auc = average_precision_score(y_va, proba)
+if __name__ == "__main__":
+    main()
 
-# Precision@Top 0.1%
-k = max(1, int(0.001 * len(y_va)))
-topk_idx = np.argsort(proba)[-k:]
-precision_topk = precision_score(y_va.iloc[topk_idx], np.ones(k))
+"""
+python scripts/train/train_baseline.py \
+  --data_root "/obs/users/fenglang/general/Spoofing Detect/data" \
+  --train_regex "202503|202504" \
+  --valid_regex "202505" \
+  --device "cpu" \
+  --is_unbalance True \
+  --learning_rate 0.05 \
+  --num_leaves 63 \
+  --n_estimators 3000 \
+  --early_stop 200
 
-print(f"PR-AUC      : {pr_auc:.4f}")
-print(f"Precision@{k} (≈0.1%) : {precision_topk:.4%}")
-print("正样本率     :", y_va.mean().round(4))
-
-# 4) 特征重要性  -----------------------------------------------
-imp = pd.Series(clf.feature_importances_, index=X_tr.columns)\
-        .sort_values(ascending=False)[:20]
-print("\nTop-20 Feature Importance:")
-print(imp.to_string())
+"""
