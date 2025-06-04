@@ -41,7 +41,7 @@ def prepare_quotes(quote_csv: Path) -> pd.DataFrame:
     """读取行情.csv → 100 ms 网格 → 返回含 quote_dt 的 DataFrame"""
     quotes = pd.read_csv(
         quote_csv, encoding="gbk",
-        usecols=["自然日","时间","申买价1","申卖价1","前收盘"]
+        usecols=["自然日","时间","申买价1","申卖价1","申买量1","申卖量1","前收盘"]
     )
     quotes["quote_dt"] = pd.to_datetime(
         quotes["自然日"].astype(str) + quotes["时间"].astype(str).str.zfill(9),
