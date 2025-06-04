@@ -705,9 +705,9 @@ if __name__ == "__main__":
 python scripts/data_process/run_etl_from_event.py \
     --root "/obs/users/fenglang/general/Spoofing Detect/data/event_stream" \
     --tickers 000989.SZ 300233.SZ \
-    --r1_ms 50 --r2_ms 1000 --r2_mult 4.0 \
+    --r1_ms 50 --r2_ms 1000 --r2_mult 1.5 \
     --backend polars \
-    --max_workers 4  # 可选：进程级并行
+    --max_workers 10  # 可选：进程级并行
 
 # 使用 Pandas 后端（兼容）
 python scripts/data_process/run_etl_from_event.py \
