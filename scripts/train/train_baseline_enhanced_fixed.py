@@ -5,10 +5,11 @@ Enhanced LightGBM Training Pipeline for Spoofing Detection (Fixed)
 ------------------------------------------------------------------
 主要优化：
 • 增强特征工程：基于现有列的技术指标、统计特征、交互特征
-• 改进数据平衡策略：SMOTE + 分层采样
+• 改进数据平衡策略：下采样 + 分层采样
 • 模型集成：多种算法组合
 • 更细致的超参数调优
 • 增强评估指标和可视化
+• 适配新的数据架构（符合data.md规范）
 """
 
 import argparse, glob, os, re, sys, time, warnings
@@ -20,8 +21,6 @@ from sklearn.model_selection import StratifiedKFold, TimeSeriesSplit
 from sklearn.ensemble import RandomForestClassifier
 from xgboost import XGBClassifier
 import optuna
-from imblearn.over_sampling import SMOTE
-from imblearn.combine import SMOTETomek
 import matplotlib.pyplot as plt
 import seaborn as sns
 
@@ -172,45 +171,67 @@ def enhance_features(df):
     return enhanced_df
 
 # ---------- Advanced Sampling Strategies --------------------------------
-def advanced_sampling(X, y, method='smote_tomek', sampling_strategy='auto'):
-    """高级采样策略"""
+def advanced_sampling(X, y, method='undersample', sampling_strategy='auto'):
+    """高级采样策略（移除SMOTE，数据太不平衡）"""
     print(f"🎯 Applying {method} sampling...")
     
     original_pos = y.sum()
     original_neg = len(y) - original_pos
     print(f"Original distribution: {original_pos:,} positive, {original_neg:,} negative")
     
-    if method == 'smote':
-        sampler = SMOTE(random_state=42, sampling_strategy=sampling_strategy)
-    elif method == 'smote_tomek':
-        sampler = SMOTETomek(random_state=42, sampling_strategy=sampling_strategy)
-    elif method == 'undersample':
-        # 简单下采样
+    if method == 'undersample':
+        # 下采样负样本，保持合理比例
         pos_indices = y[y == 1].index
         neg_indices = y[y == 0].index
         
-        # 保持1:10的比例
+        # 保持1:10的比例，避免过度不平衡
         target_neg_size = min(len(pos_indices) * 10, len(neg_indices))
         selected_neg_indices = np.random.choice(neg_indices, target_neg_size, replace=False)
         
         selected_indices = np.concatenate([pos_indices, selected_neg_indices])
-        return X.loc[selected_indices], y.loc[selected_indices]
-    else:
-        # 使用原有的数据
-        return X, y
-    
-    try:
-        X_resampled, y_resampled = sampler.fit_resample(X, y)
-        X_resampled = pd.DataFrame(X_resampled, columns=X.columns)
-        y_resampled = pd.Series(y_resampled)
+        selected_X = X.loc[selected_indices]
+        selected_y = y.loc[selected_indices]
         
-        new_pos = y_resampled.sum()
-        new_neg = len(y_resampled) - new_pos
+        new_pos = selected_y.sum()
+        new_neg = len(selected_y) - new_pos
         print(f"After {method}: {new_pos:,} positive, {new_neg:,} negative")
-        return X_resampled, y_resampled
-    except Exception as e:
-        print(f"⚠️ Sampling failed: {e}, using undersample fallback")
-        return advanced_sampling(X, y, method='undersample')
+        return selected_X, selected_y
+        
+    elif method == 'stratified_undersample':
+        # 分层下采样，按股票分别采样
+        pos_indices = y[y == 1].index
+        neg_indices = y[y == 0].index
+        
+        # 每个股票保持相同的正负样本比例
+        if 'ticker' in X.columns:
+            selected_indices = []
+            for ticker in X['ticker'].unique():
+                ticker_mask = X['ticker'] == ticker
+                ticker_pos = pos_indices[X.loc[pos_indices, 'ticker'] == ticker]
+                ticker_neg = neg_indices[X.loc[neg_indices, 'ticker'] == ticker]
+                
+                if len(ticker_pos) > 0 and len(ticker_neg) > 0:
+                    # 每个股票保持1:10比例
+                    target_neg = min(len(ticker_pos) * 10, len(ticker_neg))
+                    selected_neg = np.random.choice(ticker_neg, target_neg, replace=False)
+                    selected_indices.extend(ticker_pos.tolist())
+                    selected_indices.extend(selected_neg.tolist())
+            
+            selected_X = X.loc[selected_indices]
+            selected_y = y.loc[selected_indices]
+        else:
+            # 回退到普通下采样
+            return advanced_sampling(X, y, method='undersample')
+        
+        new_pos = selected_y.sum()
+        new_neg = len(selected_y) - new_pos
+        print(f"After {method}: {new_pos:,} positive, {new_neg:,} negative")
+        return selected_X, selected_y
+    
+    else:
+        # 不采样，使用原始数据
+        print("Using original data without sampling")
+        return X, y
 
 # ---------- Model Ensemble -----------------------------------------------
 class EnsembleClassifier:
@@ -397,8 +418,8 @@ def main():
     parser.add_argument("--data_root", required=True)
     parser.add_argument("--train_regex", default="202503|202504")
     parser.add_argument("--valid_regex", default="202505")
-    parser.add_argument("--sampling_method", choices=["none", "undersample", "smote", "smote_tomek"], 
-                       default="smote_tomek")
+    parser.add_argument("--sampling_method", choices=["none", "undersample", "stratified_undersample"], 
+                       default="undersample", help="采样方法（移除SMOTE）")
     parser.add_argument("--use_ensemble", action="store_true", help="使用模型集成")
     parser.add_argument("--optimize_params", action="store_true", help="优化超参数")
     parser.add_argument("--n_trials", type=int, default=50, help="超参数优化试验次数")
@@ -413,9 +434,16 @@ def main():
     t0 = time.time()
     print("🔍 Loading and preparing data...")
     
-    # Load data - 统一的数据加载逻辑
-    feat_pats = [os.path.join(args.data_root, "features_select", "X_*.parquet")]
-    lab_pats = [os.path.join(args.data_root, "labels_select", "labels_*.parquet")]
+    # Load data - 适配新的数据架构（符合data.md）
+    # 新架构使用 features/ 和 labels/ 而不是 features_select/ 和 labels_select/
+    feat_pats = [os.path.join(args.data_root, "features", "X_*.parquet")]
+    lab_pats = [os.path.join(args.data_root, "labels", "labels_*.parquet")]
+    
+    # 如果新路径不存在，回退到旧路径以保持兼容性
+    if not glob.glob(feat_pats[0]):
+        print("⚠️ New architecture paths not found, trying legacy paths...")
+        feat_pats = [os.path.join(args.data_root, "features_select", "X_*.parquet")]
+        lab_pats = [os.path.join(args.data_root, "labels_select", "labels_*.parquet")]
     
     # 加载特征数据
     files = []
@@ -423,7 +451,11 @@ def main():
         files.extend(sorted(glob.glob(pat)))
     
     if not files:
-        print(f"❌ No feature files found in {args.data_root}/features_select/")
+        print(f"❌ No feature files found. Tried:")
+        print(f"  New: {args.data_root}/features/X_*.parquet")
+        print(f"  Legacy: {args.data_root}/features_select/X_*.parquet")
+        print("Please run the data processing pipeline first:")
+        print("python scripts/data_process/complete_pipeline.py --base_data_dir <path> --output_root <path>")
         return
     
     print(f"📊 Loading features from {len(files)} files...")
@@ -436,8 +468,19 @@ def main():
     for pat in lab_pats:
         files.extend(sorted(glob.glob(pat)))
     
+    # 如果标准位置没有找到标签，尝试labels_enhanced目录
     if not files:
-        print(f"❌ No label files found in {args.data_root}/labels_select/")
+        enhanced_lab_pat = os.path.join(args.data_root, "labels_enhanced", "labels_*.parquet")
+        files.extend(sorted(glob.glob(enhanced_lab_pat)))
+        if files:
+            print(f"✅ Found {len(files)} label files in labels_enhanced directory")
+    
+    if not files:
+        print(f"❌ No label files found. Tried:")
+        print(f"  New: {args.data_root}/labels/labels_*.parquet")
+        print(f"  Legacy: {args.data_root}/labels_select/labels_*.parquet")
+        print(f"  Enhanced: {args.data_root}/labels_enhanced/labels_*.parquet")
+        print("Please run the data processing pipeline first.")
         return
     
     print(f"📊 Loading labels from {len(files)} files...")
@@ -491,7 +534,19 @@ def main():
     # Remove any remaining problematic features
     feature_cols = [col for col in feature_cols if not col.startswith('Unnamed')]
     
-    print(f"Using {len(feature_cols)} features")
+    # Filter out non-numeric columns that LightGBM can't handle
+    non_numeric_cols = []
+    for col in feature_cols:
+        dtype = df_train[col].dtype
+        if dtype == 'object' or 'datetime' in str(dtype):
+            non_numeric_cols.append(col)
+    
+    feature_cols = [col for col in feature_cols if col not in non_numeric_cols]
+    
+    if non_numeric_cols:
+        print(f"⚠️ Removed {len(non_numeric_cols)} non-numeric columns: {non_numeric_cols[:10]}{'...' if len(non_numeric_cols) > 10 else ''}")
+    
+    print(f"Using {len(feature_cols)} numeric features")
     
     X_tr = df_train[feature_cols]
     y_tr = df_train["y_label"]
@@ -505,7 +560,7 @@ def main():
     print(f"Class distribution - Train: {y_tr.value_counts().to_dict()}")
     print(f"Class distribution - Valid: {y_va.value_counts().to_dict()}")
     
-    # Advanced sampling
+    # Advanced sampling (移除SMOTE，使用下采样)
     if args.sampling_method != "none":
         X_tr, y_tr = advanced_sampling(X_tr, y_tr, method=args.sampling_method)
     
@@ -594,7 +649,7 @@ if __name__ == "__main__":
     
 """
 python scripts/train/train_baseline_enhanced_fixed.py \
-  --data_root "/obs/users/fenglang/general/Spoofing Detect/data" \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
   --sampling_method "undersample" \
