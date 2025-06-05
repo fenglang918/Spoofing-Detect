@@ -23,24 +23,32 @@ from rich import print as rprint
 
 # 导入特征计算组件
 try:
-    # 相对导入
-    from ..feature_engineering import (
+    # 尝试相对导入（包模式）
+    from .feature_engineering import (
         calc_realtime_features, calculate_enhanced_realtime_features,
         calculate_order_book_pressure, calc_realtime_features_polars,
         calculate_order_book_pressure_polars
     )
-    from ..utils import console
+    from ..utils import console as utils_console
 except ImportError:
-    # 绝对导入
+    # 直接导入（脚本模式）
+    import sys
+    from pathlib import Path
+    sys.path.append(str(Path(__file__).parent))
     sys.path.append(str(Path(__file__).parent.parent))
+    
     from feature_engineering import (
         calc_realtime_features, calculate_enhanced_realtime_features,
         calculate_order_book_pressure, calc_realtime_features_polars,
         calculate_order_book_pressure_polars
     )
-    from utils import console
+    from utils import console as utils_console
 
-console = Console()
+# Use imported console or create a new one if import failed
+try:
+    console = utils_console
+except NameError:
+    console = Console()
 
 class FeatureGenerator:
     """特征生成器"""

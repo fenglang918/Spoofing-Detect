@@ -13,6 +13,7 @@ label_generator.py
 import sys
 import pandas as pd
 import polars as pl
+import numpy as np
 from pathlib import Path
 from typing import Set, List, Optional, Union, Dict
 import argparse
@@ -20,20 +21,195 @@ from rich.console import Console
 from rich.progress import Progress, SpinnerColumn, TextColumn, BarColumn, TimeElapsedColumn
 from rich import print as rprint
 
-# 导入标签生成组件
-try:
-    # 相对导入
-    from ..labeling import improved_spoofing_rules_polars
-    from ..enhanced_labeling_no_leakage import enhanced_spoofing_rules_no_leakage
-    from ..utils import console
-except ImportError:
-    # 绝对导入
-    sys.path.append(str(Path(__file__).parent.parent))
-    from labeling import improved_spoofing_rules_polars
-    from enhanced_labeling_no_leakage import enhanced_spoofing_rules_no_leakage
-    from utils import console
-
 console = Console()
+
+# ────────────────────────────── 标签生成核心函数 ──────────────────────────────
+
+def apply_basic_spoofing_rules_pandas(df: pd.DataFrame, r1_ms: int, r2_ms: int, r2_mult: float) -> pd.DataFrame:
+    """
+    基础欺骗标签规则 (Pandas版本)
+    
+    Args:
+        df: 输入DataFrame
+        r1_ms: R1规则时间阈值(毫秒)
+        r2_ms: R2规则时间阈值(毫秒)
+        r2_mult: R2规则价差倍数
+        
+    Returns:
+        添加标签的DataFrame
+    """
+    try:
+        # R1规则: 快速撤单
+        df['flag_R1'] = (df['存活时间_ms'] < r1_ms) & (df['事件类型'] == '撤单')
+        
+        # R2规则: 价格操纵 
+        if 'spread' in df.columns and 'delta_mid' in df.columns:
+            safe_spread = df['spread'].fillna(np.inf).replace(0, np.inf)
+            df['flag_R2'] = ((df['存活时间_ms'] < r2_ms) & 
+                            (df['delta_mid'].abs() >= r2_mult * safe_spread))
+            df['y_label'] = (df['flag_R1'] & df['flag_R2']).astype(int)
+        else:
+            df['flag_R2'] = False
+            df['y_label'] = df['flag_R1'].astype(int)
+            
+        return df
+        
+    except Exception as e:
+        console.print(f"[red]警告: 基础标签规则应用失败: {e}[/red]")
+        if 'y_label' not in df.columns:
+            df['y_label'] = 0
+        return df
+
+def apply_basic_spoofing_rules_polars(df: Union[pl.DataFrame, pl.LazyFrame], r1_ms: int, r2_ms: int, r2_mult: float) -> Union[pl.DataFrame, pl.LazyFrame]:
+    """
+    基础欺骗标签规则 (Polars版本)
+    
+    Args:
+        df: 输入DataFrame/LazyFrame
+        r1_ms: R1规则时间阈值(毫秒)
+        r2_ms: R2规则时间阈值(毫秒) 
+        r2_mult: R2规则价差倍数
+        
+    Returns:
+        添加标签的DataFrame/LazyFrame
+    """
+    try:
+        # 转换为LazyFrame
+        if isinstance(df, pl.DataFrame):
+            lazy_df = df.lazy()
+            return_dataframe = True
+        else:
+            lazy_df = df
+            return_dataframe = False
+        
+        # 获取列名
+        schema = lazy_df.schema
+        
+        # R1规则: 快速撤单
+        if all(col in schema for col in ['存活时间_ms', '事件类型']):
+            lazy_df = lazy_df.with_columns([
+                ((pl.col('存活时间_ms') < r1_ms) & (pl.col('事件类型') == '撤单')).alias('flag_R1')
+            ])
+        else:
+            lazy_df = lazy_df.with_columns([pl.lit(False).alias('flag_R1')])
+        
+        # R2规则: 价格操纵
+        if all(col in schema for col in ['存活时间_ms', 'spread', 'delta_mid']):
+            safe_spread = pl.col('spread').fill_null(float('inf')).replace(0, float('inf'))
+            lazy_df = lazy_df.with_columns([
+                ((pl.col('存活时间_ms') < r2_ms) & 
+                 (pl.col('delta_mid').abs() >= r2_mult * safe_spread)).alias('flag_R2')
+            ])
+            lazy_df = lazy_df.with_columns([
+                (pl.col('flag_R1') & pl.col('flag_R2')).cast(pl.Int8).alias('y_label')
+            ])
+        else:
+            lazy_df = lazy_df.with_columns([
+                pl.lit(False).alias('flag_R2'),
+                pl.col('flag_R1').cast(pl.Int8).alias('y_label')
+            ])
+        
+        # 返回原始类型
+        if return_dataframe:
+            return lazy_df.collect()
+        else:
+            return lazy_df
+            
+    except Exception as e:
+        console.print(f"[red]警告: Polars标签规则应用失败: {e}[/red]")
+        # 如果失败，返回原始数据并添加基本标签
+        if isinstance(df, pl.DataFrame):
+            return df.with_columns(pl.lit(0).cast(pl.Int8).alias('y_label'))
+        else:
+            return df.with_columns(pl.lit(0).cast(pl.Int8).alias('y_label'))
+
+def apply_enhanced_spoofing_rules_pandas(df: pd.DataFrame, r1_ms: int, r2_ms: int, r2_mult: float) -> pd.DataFrame:
+    """
+    扩展欺骗标签规则 (Pandas版本)
+    
+    Args:
+        df: 输入DataFrame
+        r1_ms: R1规则时间阈值(毫秒)
+        r2_ms: R2规则时间阈值(毫秒)
+        r2_mult: R2规则价差倍数
+        
+    Returns:
+        添加扩展标签的DataFrame
+    """
+    try:
+        # 先应用基础规则
+        df = apply_basic_spoofing_rules_pandas(df, r1_ms, r2_ms, r2_mult)
+        
+        # 扩展规则1: 极端价格偏离
+        if all(col in df.columns for col in ['委托价格', '委托数量', 'ticker']):
+            df['extreme_price_deviation'] = (
+                (df['委托数量'] > df.groupby('ticker')['委托数量'].transform('quantile', 0.9))
+            ).astype(int)
+        else:
+            df['extreme_price_deviation'] = 0
+        
+        # 扩展规则2: 激进定价
+        if all(col in df.columns for col in ['委托价格', 'bid1', 'ask1', '方向_委托']):
+            df['aggressive_pricing'] = (
+                (((df['方向_委托'] == '买') & (df['委托价格'] > df['ask1'])) |
+                 ((df['方向_委托'] == '卖') & (df['委托价格'] < df['bid1'])))
+            ).astype(int)
+        else:
+            df['aggressive_pricing'] = 0
+        
+        # 扩展规则3: 异常大单
+        if all(col in df.columns for col in ['委托数量', 'ticker']):
+            df['abnormal_large_order'] = (
+                df['委托数量'] > df.groupby('ticker')['委托数量'].transform('quantile', 0.95)
+            ).astype(int)
+        else:
+            df['abnormal_large_order'] = 0
+        
+        # 扩展规则4: 市场活跃时段异常
+        if '委托_datetime' in df.columns:
+            df['委托_datetime'] = pd.to_datetime(df['委托_datetime'])
+            market_open = ((df['委托_datetime'].dt.time >= pd.to_datetime('09:30').time()) & 
+                          (df['委托_datetime'].dt.time <= pd.to_datetime('09:45').time()))
+            market_close = ((df['委托_datetime'].dt.time >= pd.to_datetime('14:45').time()) & 
+                           (df['委托_datetime'].dt.time <= pd.to_datetime('15:00').time()))
+            
+            if '委托数量' in df.columns and 'ticker' in df.columns:
+                df['volatile_period_anomaly'] = (
+                    (market_open | market_close) &
+                    (df['委托数量'] > df.groupby('ticker')['委托数量'].transform('median') * 3)
+                ).astype(int)
+            else:
+                df['volatile_period_anomaly'] = 0
+        else:
+            df['volatile_period_anomaly'] = 0
+        
+        # 综合扩展标签
+        pattern_rules = ['extreme_price_deviation', 'aggressive_pricing', 'abnormal_large_order', 'volatile_period_anomaly']
+        available_rules = [col for col in pattern_rules if col in df.columns]
+        
+        if available_rules:
+            # 宽松版本：任意规则触发
+            df['enhanced_spoofing_liberal'] = (df[available_rules].sum(axis=1) >= 1).astype(int)
+            # 中等版本：多个规则触发
+            df['enhanced_spoofing_moderate'] = (df[available_rules].sum(axis=1) >= 2).astype(int)
+            # 严格版本：大部分规则触发
+            df['enhanced_spoofing_strict'] = (df[available_rules].sum(axis=1) >= 3).astype(int)
+            
+            # 结合原始规则的综合标签
+            if 'y_label' in df.columns:
+                df['enhanced_combined'] = (
+                    (df['y_label'] == 1) | (df['enhanced_spoofing_moderate'] == 1)
+                ).astype(int)
+            else:
+                df['enhanced_combined'] = df['enhanced_spoofing_moderate']
+        
+        return df
+        
+    except Exception as e:
+        console.print(f"[red]警告: 扩展标签规则应用失败: {e}[/red]")
+        return df
+
+# ────────────────────────────── 标签生成器类 ──────────────────────────────
 
 class LabelGenerator:
     """标签生成器"""
@@ -70,7 +246,7 @@ class LabelGenerator:
             pipeline = [
                 {
                     "name": "扩展标签规则",
-                    "function": "enhanced_spoofing_rules_no_leakage",
+                    "function": "apply_enhanced_spoofing_rules",
                     "description": f"R1({self.r1_ms}ms) + R2({self.r2_ms}ms, {self.r2_mult}x) + 扩展规则"
                 }
             ]
@@ -78,7 +254,7 @@ class LabelGenerator:
             pipeline = [
                 {
                     "name": "基础标签规则", 
-                    "function": "improved_spoofing_rules_polars",
+                    "function": "apply_basic_spoofing_rules",
                     "description": f"R1({self.r1_ms}ms) + R2({self.r2_ms}ms, {self.r2_mult}x)"
                 }
             ]
@@ -204,34 +380,28 @@ class LabelGenerator:
         func_name = step["function"]
         
         try:
-            if func_name == "improved_spoofing_rules_polars":
+            if func_name == "apply_basic_spoofing_rules":
                 if self.backend == "polars":
-                    return improved_spoofing_rules_polars(
+                    return apply_basic_spoofing_rules_polars(
                         data, self.r1_ms, self.r2_ms, self.r2_mult
                     )
                 else:
-                    # 如果是pandas，需要先转换
-                    if isinstance(data, pd.DataFrame):
-                        pl_data = pl.from_pandas(data).lazy()
-                    else:
-                        pl_data = data
-                    result = improved_spoofing_rules_polars(
-                        pl_data, self.r1_ms, self.r2_ms, self.r2_mult
+                    return apply_basic_spoofing_rules_pandas(
+                        data, self.r1_ms, self.r2_ms, self.r2_mult
                     )
-                    return result.collect().to_pandas()
                     
-            elif func_name == "enhanced_spoofing_rules_no_leakage":
+            elif func_name == "apply_enhanced_spoofing_rules":
                 if self.backend == "pandas":
-                    return enhanced_spoofing_rules_no_leakage(
+                    return apply_enhanced_spoofing_rules_pandas(
                         data, self.r1_ms, self.r2_ms, self.r2_mult
                     )
                 else:
-                    # polars -> pandas -> polars
+                    # 扩展规则目前只支持pandas，需要转换
                     if isinstance(data, pl.LazyFrame):
                         pd_data = data.collect().to_pandas()
                     else:
                         pd_data = data.to_pandas()
-                    result = enhanced_spoofing_rules_no_leakage(
+                    result = apply_enhanced_spoofing_rules_pandas(
                         pd_data, self.r1_ms, self.r2_ms, self.r2_mult
                     )
                     return pl.from_pandas(result)
@@ -264,7 +434,7 @@ class LabelGenerator:
             if self.backend == "polars":
                 df = pl.read_csv(input_path, try_parse_dates=True)
             else:
-                df = pd.read_csv(input_path, parse_dates=["委托_datetime", "事件_datetime"])
+                df = pd.read_csv(input_path, parse_dates=["委托_datetime", "事件_datetime"], low_memory=False)
             
             # 检查数据是否为空
             if self.backend == "polars":
@@ -530,25 +700,32 @@ if __name__ == "__main__":
 """
 使用示例:
 
-# 基础标签生成
+# 基础标签生成 (推荐使用polars后端)
 python scripts/data_process/labels/label_generator.py \
-    --input_dir "/path/to/event_stream" \
-    --output_dir "/path/to/labels" \
+    --input_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/event_stream" \
+    --output_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/labels" \
     --r1_ms 50 --r2_ms 1000 --r2_mult 4.0 \
     --backend polars
 
-# 扩展标签规则
+# 扩展标签规则 (包含更多欺诈检测模式)
 python scripts/data_process/labels/label_generator.py \
-    --input_dir "/path/to/event_stream" \
-    --output_dir "/path/to/labels" \
-    --r1_ms 100 --r2_ms 1000 --r2_mult 1.5 \
+    --input_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/event_stream" \
+    --output_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/labels_enhanced" \
+    --r1_ms 1000 --r2_ms 1000 --r2_mult 1.0 \
     --extended \
     --backend pandas
 
 # 指定股票和日期
 python scripts/data_process/labels/label_generator.py \
-    --input_dir "/path/to/event_stream" \
-    --output_dir "/path/to/labels" \
+    --input_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/event_stream" \
+    --output_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/labels" \
     --tickers 000001.SZ 000002.SZ \
-    --dates 20230301 20230302
+    --dates 20240301 20240302 \
+    --backend polars
+
+# 批量处理所有数据
+python scripts/data_process/labels/label_generator.py \
+    --input_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/event_stream" \
+    --output_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/labels" \
+    --backend polars
 """ 

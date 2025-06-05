@@ -69,6 +69,8 @@ Pipfile.lock
 # Archive directories
 scripts/data_process/archive/
 scripts/*/archive/
+scripts/archive/
+
 
 # OS generated files
 .DS_Store
