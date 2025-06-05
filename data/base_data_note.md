@@ -1,7 +1,7 @@
 以下示例以最新的根目录为基准，说明“解压后原始 CSV 文件”的存放结构：
 
 ```
-/obs/users/fenglang/general/Spoofing Detect/data/base_data/
+/home/ma-user/code/fenglang/Spoofing Detect/data/base_data
 ├── 20250301/
 │   └── 20250301/
 │       ├── 000989.SZ/

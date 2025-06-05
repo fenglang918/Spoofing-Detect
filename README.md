@@ -1,160 +1,125 @@
-# 高频交易中的虚假报单实时监测
+# 🕵️ Spoofing Detection Project
 
-## 项目描述
-基于高频交易数据，构建正常交易行为模式，实时识别虚假挂单与频繁撤单行为，提升对价格操纵风险的监测与预警能力。
+端到端的虚假报单检测系统，基于机器学习的高频交易异常行为识别。
 
-## 主要工作内容
+## 📁 项目结构
 
-### 1. 数据预处理与特征工程
-- 整理高频交易数据
-- 提取关键特征：
-  - 订单存活时间
-  - 撤单率
-  - 买卖价差
-  - 挂单簇拥
-- 完成数据标准化处理与特征构建
+```
+📂 Spoofing Detection/
+├── 📂 core/                    # 核心代码
+│   ├── complete_spoofing_pipeline.py   # 完整检测pipeline
+│   └── run_optimization_pipeline.py    # 参数优化pipeline
+├── 📂 scripts/                 # 数据处理脚本
+│   ├── data_process/          # 数据预处理
+│   ├── analysis/              # 分析工具
+│   └── evaluation/            # 评估工具
+├── 📂 results/                 # 结果输出
+│   └── archive/               # 历史结果
+├── 📂 docs/                    # 文档
+├── 📂 data/                    # 数据目录
+└── main.py                     # 🎯 主入口文件
+```
 
-### 2. 模型开发与训练
-- 设计异常检测与分类流程
-- 训练交易行为识别模型
-- 输出异常概率得分
+## 🚀 快速开始
 
-### 3. 系统评估与优化
-- 结合撤单率高峰与委托无簇拥特征，识别潜在操纵时段
-- 绘制异常交易热力图
-- 评估模型分类性能
-- 探讨监测系统在中国A股市场的适用性与优化路径
-
-# 代码
-
-
-
-## 📊 **1. scripts/analysis/performance_comparison.py**
-**作用：模型性能对比和分析工具**
-
-### 主要功能：
-- **多实验结果对比**：自动加载不同实验的JSON结果文件，生成对比图表
-- **可视化分析**：
-  - PR-AUC、ROC-AUC对比柱状图
-  - Precision@K指标对比
-  - 训练时间、特征数量对比
-  - 特征重要性热力图和趋势分析
-- **智能建议生成**：基于结果自动生成优化建议
-- **报告导出**：生成Markdown格式的性能分析报告
-
-### 使用场景：
+### 安装依赖
 ```bash
-# 对比多个实验结果
-python scripts/analysis/performance_comparison.py \
-    --results_dir "experiment_results" \
-    --output_dir "analysis_output"
+pip install pandas numpy scikit-learn lightgbm polars
 ```
 
-### 价值：
-- **科学决策**：通过数据可视化帮助选择最佳模型
-- **实验管理**：系统化管理多个模型实验结果
-- **业务汇报**：自动生成专业的分析报告
+### 运行检测系统
 
----
-
-## 🏷️ **2. scripts/data_process/improved_labeling.py** 
-**作用：改进的Spoofing标签定义系统**
-
-### 核心改进：
-当前基线标签过于简单(R1∩R2)，改进版本识别多种欺诈模式（R1∪R2∪R3∪R4∪R5）：
-
-#### 新增标签类型：
-1. **快速撤单+市场影响** (`quick_cancel_impact`)
-   - 不仅看速度，还看是否在最优价位且订单较大
-   
-2. **价格操纵模式** (`price_manipulation`)  
-   - 远离市场价格的大订单快速撤单
-   
-3. **虚假流动性提供** (`fake_liquidity`)
-   - 在bid/ask提供大量流动性但快速撤回
-   
-4. **分层下单模式** (`layering_cancel`)
-   - 检测短时间内多个有序价格的订单后撤单
-   
-5. **异常时间模式** (`active_hours_spoofing`)
-   - 交易活跃时段的可疑快速撤单
-
-### 技术特性：
-- **订单簿压力分析**：计算买卖压力不平衡
-- **分层模式检测**：识别Layering等复杂欺诈手法
-- **时间模式分析**：考虑市场微观结构特征
-- **标签质量分析**：提供标签相关性和分布统计
-
-### 预期效果：
-- **提高标签质量**：减少假阳性，提高标签准确性
-- **增加正样本**：识别更多真实的欺诈案例
-- **多层次检测**：支持不同严重程度的欺诈检测
-
----
-
-## 🔄 **3. run_optimization_pipeline.py**
-**作用：一站式自动化优化流程**
-
-### 完整流程：
-```
-数据输入 → 标签改进 → 基线训练 → 多种增强实验 → 性能分析 → 报告生成
-```
-
-### 自动化实验：
-1. **改进标签定义**（可选）
-2. **基线模型训练**（可选）  
-3. **多种增强实验**：
-   - Enhanced: 增强特征工程 + SMOTE-Tomek
-   - Ensemble: 模型集成 + SMOTE  
-   - Optimized: 超参数优化 + SMOTE-Tomek
-
-### 智能特性：
-- **依赖检查**：自动检测所需Python包
-- **错误处理**：实验失败时继续其他实验
-- **结果解析**：自动提取关键指标
-- **进度跟踪**：实时显示每个步骤的进展
-
-### 使用示例：
+#### 1. 完整流程（推荐）
 ```bash
-# 完整优化流程
-python run_optimization_pipeline.py \
-  --data_root "/obs/users/fenglang/general/Spoofing Detect/data"
-
-# 快速测试（跳过耗时步骤）
-python run_optimization_pipeline.py \
-  --data_root "/path/to/data" \
-  --skip_labeling \
-  --skip_baseline \
-  --experiments enhanced
-
-# 自定义实验组合
-python run_optimization_pipeline.py \
-  --data_root "/path/to/data" \
-  --experiments enhanced ensemble optimized
+# 从原始数据开始，完整的检测流程
+python main.py complete \
+  --data_root "/obs/users/fenglang/general/Spoofing Detect/data/base_data" \
+  --tickers 000989.SZ 300233.SZ
 ```
+
+#### 2. 快速训练
+```bash
+# 跳过数据处理，直接训练模型
+python main.py complete \
+  --data_root "/obs/users/fenglang/general/Spoofing Detect/data/base_data" \
+  --skip_all
+```
+
+#### 3. 参数优化
+```bash
+# 运行参数优化实验
+python main.py optimize \
+  --data_root "/obs/users/fenglang/general/Spoofing Detect/data/base_data"
+```
+
+## 🎯 核心特性
+
+### 🏷️ Extended Labels Strategy
+- **5种虚假报单模式**：快速撤单冲击、价格操纵、虚假流动性、分层撤单、活跃时段异常
+- **多层次标签**：Liberal（任意模式）/ Moderate（2+模式）/ Strict（3+模式）
+- **Extended Liberal**: 主要检测策略，提供最全面的虚假报单识别
+
+### 🧠 智能训练架构
+- **按股票分开训练**：针对每只股票的特点优化模型
+- **特征无泄露**：严格控制时间顺序，避免未来信息泄露
+- **自动平衡**：处理极度不平衡的标签分布
+
+### 📊 全面评估体系
+- **PR-AUC**: 主要评估指标，适合不平衡数据
+- **Precision@K**: 实用的Top-K精度评估
+- **分股票性能分析**: 识别高性能和低性能股票
+
+## 📈 结果解读
+
+### 输出文件
+- `extended_labels_performance.csv`: 各标签策略性能对比
+- `by_ticker_results.csv`: 分股票详细结果
+- `ticker_averages.csv`: 股票平均性能统计
+- `extended_labels_analysis.json`: 标签分布分析
+
+### 关键指标
+- **Extended Liberal PR-AUC**: 主要展示结果
+- **Precision@0.1%**: 实际应用中的精度
+- **股票性能差异**: 识别适合检测的股票
+
+## 🛠️ 高级用法
+
+### 直接使用核心模块
+```python
+from core.complete_spoofing_pipeline import CompleteSpoofingPipeline
+
+pipeline = CompleteSpoofingPipeline()
+results = pipeline.run_complete_pipeline(
+    base_data_root="/path/to/data",
+    train_regex="202503|202504",
+    valid_regex="202505",
+    by_ticker=True
+)
+```
+
+### 自定义虚假报单模式
+参考 `core/complete_spoofing_pipeline.py` 中的模式定义，可以添加新的检测规则。
+
+## 📚 系统架构
+
+1. **数据合并** (`scripts/data_process/merge_order_trade.py`)
+2. **特征工程** (`scripts/data_process/run_etl_from_event.py`)
+3. **扩展标签生成** (自动生成5种虚假报单模式)
+4. **模型训练** (LightGBM + 按股票分开训练)
+5. **综合评估** (多维度性能分析)
+
+## 🔧 配置选项
+
+- `--data_root`: 数据根目录
+- `--tickers`: 指定股票列表
+- `--skip_all`: 跳过数据处理步骤
+- `--by_ticker`: 启用按股票分开训练（默认开启）
+
+## 📝 更新日志
+
+- **v2.0**: 引入Extended Labels和按股票训练
+- **v1.0**: 基础虚假报单检测系统
 
 ---
 
-## 🎯 **整体架构价值**
-
-### 1. **研发效率提升**
-- **一键运行**：从原始数据到最终报告全自动化
-- **实验管理**：系统化的实验版本控制
-- **快速迭代**：支持快速测试新想法
-
-### 2. **生产就绪**  
-- **模块化设计**：每个组件可独立部署
-- **标准化输出**：JSON格式便于系统集成
-- **监控友好**：详细的日志和进度跟踪
-
-### 3. **业务价值**
-- **科学决策**：基于数据的模型选择
-- **持续改进**：支持标签质量和模型性能的持续优化
-- **风险控制**：多层次的欺诈检测能力
-
-### 4. **未来扩展**
-- **新算法集成**：易于添加新的机器学习算法
-- **多标签支持**：支持不同类型的金融欺诈检测
-- **实时部署**：架构支持流式数据处理
-
-这三个脚本构成了一个完整的**MLOps工作流**，从数据预处理到模型评估的全链条自动化，大大提升了金融反欺诈模型的开发和部署效率！
+🎯 **推荐使用**: `python main.py complete --data_root /path/to/data --skip_all` 进行快速训练和评估。

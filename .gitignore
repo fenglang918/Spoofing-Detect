@@ -1,2 +1,80 @@
+# Temporary files
 temp/
+temp_test_data/
+*.tmp
+*.log
+*.cache
+
+# IDE and editors
 .idea/
+.vscode/
+*.swp
+*.swo
+*~
+
+# Data and results (large files)
+data/
+!data/*.md
+!data/*.txt
+!data/*.json
+!data/*.yaml
+!data/*.yml
+!data/README*
+!data/*/README*
+!data/*/*.md
+!data/*/*.txt
+!data/*/*.json
+results/
+!results/*.md
+!results/*.txt
+!results/*.json
+*.pkl
+*.parquet
+*.csv
+*.h5
+*.hdf5
+
+# Python
+__pycache__/
+*.py[cod]
+*$py.class
+*.so
+.Python
+build/
+develop-eggs/
+dist/
+downloads/
+eggs/
+.eggs/
+lib/
+lib64/
+parts/
+sdist/
+var/
+wheels/
+*.egg-info/
+.installed.cfg
+*.egg
+MANIFEST
+
+# Jupyter Notebook
+.ipynb_checkpoints
+
+# pyenv
+.python-version
+
+# pipenv
+Pipfile.lock
+
+# Archive directories
+scripts/data_process/archive/
+scripts/*/archive/
+
+# OS generated files
+.DS_Store
+.DS_Store?
+._*
+.Spotlight-V100
+.Trashes
+ehthumbs.db
+Thumbs.db
