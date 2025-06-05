@@ -401,14 +401,32 @@ def comprehensive_evaluation(y_true, y_pred_proba, y_pred_binary=None):
     pr_auc = average_precision_score(y_true, y_pred_proba)
     roc_auc = roc_auc_score(y_true, y_pred_proba)
     
+    # 计算样本分布
+    total_samples = len(y_true)
+    positive_samples = y_true.sum()
+    
     # Precision at K
     metrics = {'PR-AUC': pr_auc, 'ROC-AUC': roc_auc}
+    
+    print(f"\n📊 样本分布:")
+    print(f"总样本数: {total_samples:,}")
+    print(f"正样本数: {positive_samples:,} ({positive_samples/total_samples*100:.3f}%)")
+    print(f"\n📈 Precision@K% (实际值 / 理论最大值 = 达成率):")
     
     for k in [0.001, 0.005, 0.01, 0.05]:
         k_int = max(1, int(len(y_true) * k))
         top_k_idx = y_pred_proba.argsort()[::-1][:k_int]
         prec_k = y_true.iloc[top_k_idx].mean() if hasattr(y_true, 'iloc') else y_true[top_k_idx].mean()
+        
+        # 计算理论最大值
+        theoretical_max = min(positive_samples / k_int, 1.0)
+        achievement_rate = prec_k / theoretical_max if theoretical_max > 0 else 0
+        
         metrics[f'Precision@{k*100:.1f}%'] = prec_k
+        metrics[f'Precision@{k*100:.1f}%_max'] = theoretical_max
+        metrics[f'Precision@{k*100:.1f}%_achievement'] = achievement_rate
+        
+        print(f"  K={k*100:4.1f}%: {prec_k:.6f} / {theoretical_max:.6f} = {achievement_rate*100:5.1f}%")
     
     return metrics
 
@@ -527,26 +545,58 @@ def main():
     df_train = enhance_features(df_train)
     df_valid = enhance_features(df_valid)
     
-    # Prepare features
-    id_cols = ["自然日", "ticker", "交易所委托号", "y_label"]
-    feature_cols = [col for col in df_train.columns if col not in id_cols]
+    # 使用严格的防泄露特征清理
+    print("🛡️ 应用严格的数据泄露防护...")
     
-    # Remove any remaining problematic features
-    feature_cols = [col for col in feature_cols if not col.startswith('Unnamed')]
-    
-    # Filter out non-numeric columns that LightGBM can't handle
-    non_numeric_cols = []
-    for col in feature_cols:
-        dtype = df_train[col].dtype
-        if dtype == 'object' or 'datetime' in str(dtype):
-            non_numeric_cols.append(col)
-    
-    feature_cols = [col for col in feature_cols if col not in non_numeric_cols]
-    
-    if non_numeric_cols:
-        print(f"⚠️ Removed {len(non_numeric_cols)} non-numeric columns: {non_numeric_cols[:10]}{'...' if len(non_numeric_cols) > 10 else ''}")
-    
-    print(f"Using {len(feature_cols)} numeric features")
+    # 导入防泄露模块
+    try:
+        import sys
+        from pathlib import Path
+        sys.path.append(str(Path(__file__).parent.parent / "data_process" / "features"))
+        from leakage_free_features import clean_features_for_training, validate_features_safety
+        
+        # 清理训练数据
+        df_train_clean = clean_features_for_training(df_train, "y_label")
+        df_valid_clean = clean_features_for_training(df_valid, "y_label")
+        
+        # 获取特征列（排除目标变量和ID列）
+        id_cols = ["自然日", "ticker", "交易所委托号", "y_label"]
+        feature_cols = [col for col in df_train_clean.columns if col not in id_cols]
+        
+        print(f"✅ 防泄露清理完成，使用 {len(feature_cols)} 个安全特征")
+        
+        # 更新数据框
+        df_train = df_train_clean
+        df_valid = df_valid_clean
+        
+    except ImportError as e:
+        print(f"⚠️ 无法导入防泄露模块，使用基础清理: {e}")
+        
+        # 基础清理：手动排除已知泄露特征
+        leakage_cols = [
+            "存活时间_ms", "事件_datetime", "成交价格", "成交数量", "事件类型",
+            "is_cancel_event", "is_trade_event",
+            "flag_R1", "flag_R2", "enhanced_spoofing_liberal", 
+            "enhanced_spoofing_moderate", "enhanced_spoofing_strict"
+        ]
+        
+        id_cols = ["自然日", "ticker", "交易所委托号", "y_label"]
+        exclude_cols = id_cols + leakage_cols
+        feature_cols = [col for col in df_train.columns if col not in exclude_cols]
+        
+        # 移除非数值列
+        non_numeric_cols = []
+        for col in feature_cols:
+            dtype = df_train[col].dtype
+            if dtype == 'object' or 'datetime' in str(dtype):
+                non_numeric_cols.append(col)
+        
+        feature_cols = [col for col in feature_cols if col not in non_numeric_cols]
+        
+        if non_numeric_cols:
+            print(f"⚠️ 移除 {len(non_numeric_cols)} 个非数值列: {non_numeric_cols[:5]}{'...' if len(non_numeric_cols) > 5 else ''}")
+        
+        print(f"使用 {len(feature_cols)} 个特征（基础清理）")
     
     X_tr = df_train[feature_cols]
     y_tr = df_train["y_label"]

@@ -24,7 +24,7 @@ console = Console()
 
 # ──────────────────────────── Pandas Feature Engineering ────────────────────────────
 def calc_realtime_features(df_pd: pd.DataFrame) -> pd.DataFrame:
-    """实时可观测特征列 (Pandas version) - 修正版：仅使用当前时刻可观测信息"""
+    """实时可观测特征列 (Pandas version) - 严格防泄露版：仅使用委托时刻及之前的信息"""
     needed = ["申买价1", "申卖价1", "前收盘", "申买量1", "申卖量1"]
     if STRICT:
         # Ensure cols exist or create them with NaN if not STRICT (but STRICT is True)
@@ -71,7 +71,8 @@ def calc_realtime_features(df_pd: pd.DataFrame) -> pd.DataFrame:
     # 确保时间排序
     df_pd.sort_values("委托_datetime", inplace=True)
     
-    # 修正滚动窗口：仅使用当前时刻之前的数据
+    # 严格防泄露：滚动窗口仅使用委托时刻之前的数据
+    # 注意：这里统计的是所有委托事件，包括当前委托之前的其他委托
     df_pd["orders_100ms"] = (df_pd.rolling("100ms", on="委托_datetime", closed='left')["委托_datetime"].count().fillna(0))
     df_pd["orders_1s"] = (df_pd.rolling("1s", on="委托_datetime", closed='left')["委托_datetime"].count().fillna(0))
     
