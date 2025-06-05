@@ -26,6 +26,39 @@ import seaborn as sns
 
 warnings.filterwarnings('ignore')
 
+# ---------- Focal Loss Implementation --------------------------------
+def focal_loss_objective(y_true, y_pred, alpha=0.25, gamma=2.0):
+    """
+    Focal Loss for LightGBM
+    Args:
+        y_true: 真实标签
+        y_pred: 预测概率（logits）
+        alpha: 平衡因子，用于平衡正负样本
+        gamma: focusing参数，用于减少易分类样本的权重
+    """
+    # 将logits转换为概率
+    p = 1 / (1 + np.exp(-y_pred))
+    
+    # 计算focal loss
+    ce_loss = -y_true * np.log(p + 1e-8) - (1 - y_true) * np.log(1 - p + 1e-8)
+    p_t = p * y_true + (1 - p) * (1 - y_true)
+    alpha_t = alpha * y_true + (1 - alpha) * (1 - y_true)
+    
+    focal_weight = alpha_t * (1 - p_t) ** gamma
+    focal_loss = focal_weight * ce_loss
+    
+    # 计算梯度和海塞矩阵
+    grad = focal_weight * (p - y_true)
+    hess = focal_weight * p * (1 - p) * (gamma * (y_true - p) + 1)
+    
+    return grad, hess
+
+def focal_loss_lgb(alpha=0.25, gamma=2.0):
+    """返回LightGBM可用的focal loss目标函数"""
+    def objective(y_true, y_pred):
+        return focal_loss_objective(y_true, y_pred, alpha, gamma)
+    return objective
+
 # ---------- Enhanced Feature Engineering --------------------------------
 def create_technical_indicators(df):
     """创建技术指标特征（基于现有列）"""
@@ -446,6 +479,11 @@ def main():
     parser.add_argument("--label_type", choices=["composite_spoofing", "conservative_spoofing"], 
                        default="composite_spoofing",
                        help="使用哪种增强标签类型")
+    parser.add_argument("--use_focal_loss", action="store_true", help="使用Focal Loss处理不平衡数据")
+    parser.add_argument("--focal_alpha", type=float, default=0.25, help="Focal Loss alpha参数")
+    parser.add_argument("--focal_gamma", type=float, default=2.0, help="Focal Loss gamma参数")
+    parser.add_argument("--use_class_weight", action="store_true", help="使用类别权重处理不平衡数据")
+    parser.add_argument("--class_weight_ratio", type=float, default=None, help="正样本权重比例，默认为负样本数/正样本数")
     
     args = parser.parse_args()
     
@@ -621,45 +659,81 @@ def main():
         model.fit(X_tr, y_tr, X_va, y_va)
     else:
         # Single model with optional hyperparameter optimization
-        if args.optimize_params:
+        base_params = {
+            'objective': 'binary',
+            'metric': 'average_precision',
+            'learning_rate': 0.05,
+            'num_leaves': 31,
+            'max_depth': 6,
+            'n_estimators': 1000,
+            'subsample': 0.8,
+            'colsample_bytree': 0.8,
+            'reg_alpha': 10,
+            'reg_lambda': 10,
+            'random_state': 42,
+            'verbose': -1
+        }
+        
+        if args.use_focal_loss:
+            print(f"🎯 使用Focal Loss (alpha={args.focal_alpha}, gamma={args.focal_gamma})")
+            base_params.update({
+                'objective': focal_loss_lgb(args.focal_alpha, args.focal_gamma),
+                'metric': 'None'  # 使用自定义objective时需要设置为None
+            })
+            model = lgb.LGBMClassifier(**base_params)
+        elif args.use_class_weight:
+            # 计算类别权重
+            neg_count = (y_tr == 0).sum()
+            pos_count = (y_tr == 1).sum()
+            
+            if args.class_weight_ratio is not None:
+                scale_pos_weight = args.class_weight_ratio
+            else:
+                scale_pos_weight = neg_count / pos_count
+            
+            print(f"🎯 使用类别权重 (scale_pos_weight={scale_pos_weight:.2f})")
+            print(f"   负样本: {neg_count:,}, 正样本: {pos_count:,}, 比例: {neg_count/pos_count:.1f}:1")
+            
+            base_params['scale_pos_weight'] = scale_pos_weight
+            model = lgb.LGBMClassifier(**base_params)
+        elif args.optimize_params:
             best_params = optimize_lgb_params(X_tr, y_tr, X_va, y_va, args.n_trials)
             model = lgb.LGBMClassifier(**best_params, n_estimators=1000, random_state=42, verbose=-1)
         else:
-            model = lgb.LGBMClassifier(
-                objective='binary',
-                metric='average_precision',
-                learning_rate=0.05,
-                num_leaves=31,
-                max_depth=6,
-                n_estimators=1000,
-                subsample=0.8,
-                colsample_bytree=0.8,
-                reg_alpha=10,
-                reg_lambda=10,
-                random_state=42,
-                verbose=-1
-            )
+            model = lgb.LGBMClassifier(**base_params)
         
         # 修复early_stopping参数
-        try:
-            model.fit(
-                X_tr, y_tr,
-                eval_set=[(X_va, y_va)],
-                early_stopping_rounds=100,
-                verbose=False
-            )
-        except TypeError:
-            # 处理新版本LightGBM的兼容性问题
-            from lightgbm import early_stopping
-            model.fit(
-                X_tr, y_tr,
-                eval_set=[(X_va, y_va)],
-                callbacks=[early_stopping(100)]
-            )
+        if args.use_focal_loss:
+            # Focal Loss训练，使用固定轮数，不使用early stopping
+            print("📝 Focal Loss模式：使用固定500轮训练（无early stopping）")
+            model.n_estimators = 500
+            model.fit(X_tr, y_tr)
+        else:
+            try:
+                model.fit(
+                    X_tr, y_tr,
+                    eval_set=[(X_va, y_va)],
+                    early_stopping_rounds=100,
+                    verbose=False
+                )
+            except TypeError:
+                # 处理新版本LightGBM的兼容性问题
+                from lightgbm import early_stopping
+                model.fit(
+                    X_tr, y_tr,
+                    eval_set=[(X_va, y_va)],
+                    callbacks=[early_stopping(100)]
+                )
     
     # Evaluation
     print("\n📊 Comprehensive Evaluation:")
-    y_pred_proba = model.predict_proba(X_va)[:, 1]
+    if args.use_focal_loss:
+        # Focal Loss模式：predict返回1D数组，直接使用
+        y_pred_proba = model.predict(X_va)
+        # 将logits转换为概率
+        y_pred_proba = 1 / (1 + np.exp(-y_pred_proba))
+    else:
+        y_pred_proba = model.predict_proba(X_va)[:, 1]
     
     metrics = comprehensive_evaluation(y_va, y_pred_proba)
     for metric, value in metrics.items():
@@ -679,8 +753,18 @@ def main():
     print(f"\nTotal training time: {time.time()-t0:.1f}s")
     
     # Save results
+    method_components = [f"Enhanced+{args.sampling_method}"]
+    if args.use_ensemble:
+        method_components.append("Ensemble")
+    if args.optimize_params:
+        method_components.append("Optimized")
+    if args.use_focal_loss:
+        method_components.append(f"FocalLoss(α={args.focal_alpha},γ={args.focal_gamma})")
+    if args.use_class_weight:
+        method_components.append(f"ClassWeight({scale_pos_weight:.0f})")
+    
     results = {
-        'method': f"Enhanced+{args.sampling_method}" + ("+Ensemble" if args.use_ensemble else "") + ("+Optimized" if args.optimize_params else ""),
+        'method': "+".join(method_components),
         'training_time': time.time()-t0,
         'n_features': len(feature_cols),
         'positive_ratio': y_tr.mean(),
