@@ -484,6 +484,8 @@ def main():
     parser.add_argument("--focal_gamma", type=float, default=2.0, help="Focal Loss gamma参数")
     parser.add_argument("--use_class_weight", action="store_true", help="使用类别权重处理不平衡数据")
     parser.add_argument("--class_weight_ratio", type=float, default=None, help="正样本权重比例，默认为负样本数/正样本数")
+    parser.add_argument("--eval_output_dir", type=str, default=None, 
+                       help="评估结果保存目录，默认为 results/evaluation_results")
     
     args = parser.parse_args()
     
@@ -752,7 +754,7 @@ def main():
     
     print(f"\nTotal training time: {time.time()-t0:.1f}s")
     
-    # Save results
+    # Save comprehensive evaluation results
     method_components = [f"Enhanced+{args.sampling_method}"]
     if args.use_ensemble:
         method_components.append("Ensemble")
@@ -763,20 +765,280 @@ def main():
     if args.use_class_weight:
         method_components.append(f"ClassWeight({scale_pos_weight:.0f})")
     
+    method_name = "+".join(method_components)
+    
+    # 创建评估结果保存目录
+    if args.eval_output_dir is not None:
+        eval_output_dir = args.eval_output_dir
+    else:
+        eval_output_dir = os.path.join("results", "evaluation_results")
+    
+    os.makedirs(eval_output_dir, exist_ok=True)
+    print(f"📁 评估结果将保存到: {eval_output_dir}")
+    
+    # 生成时间戳用于文件命名
+    from datetime import datetime
+    timestamp = datetime.now().strftime("%Y%m%d_%H%M%S")
+    
+    # 1. 保存基础结果
     results = {
-        'method': "+".join(method_components),
+        'method': method_name,
+        'timestamp': timestamp,
         'training_time': time.time()-t0,
         'n_features': len(feature_cols),
         'positive_ratio': y_tr.mean(),
+        'train_samples': len(y_tr),
+        'valid_samples': len(y_va),
+        'train_positive': int(y_tr.sum()),
+        'valid_positive': int(y_va.sum()),
         **metrics
     }
     
-    # Save results to JSON
+    # 保存基础结果到JSON
     import json
-    results_file = os.path.join(args.data_root, "enhanced_results.json")
+    results_file = os.path.join(eval_output_dir, f"evaluation_results_{timestamp}.json")
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
-    print(f"Results saved to: {results_file}")
+    print(f"✅ 基础评估结果已保存: {results_file}")
+    
+    # 2. 保存详细的分类报告
+    y_pred_binary = (y_pred_proba > 0.5).astype(int)
+    
+    try:
+        # 生成分类报告
+        from sklearn.metrics import classification_report, confusion_matrix
+        
+        class_report = classification_report(y_va, y_pred_binary, output_dict=True)
+        
+        # 保存分类报告
+        class_report_file = os.path.join(eval_output_dir, f"classification_report_{timestamp}.json")
+        with open(class_report_file, 'w') as f:
+            json.dump(class_report, f, indent=2)
+        print(f"✅ 分类报告已保存: {class_report_file}")
+        
+        # 生成并保存混淆矩阵
+        conf_matrix = confusion_matrix(y_va, y_pred_binary)
+        
+        conf_matrix_data = {
+            'confusion_matrix': conf_matrix.tolist(),
+            'labels': ['Non-Spoofing', 'Spoofing'],
+            'true_negatives': int(conf_matrix[0, 0]),
+            'false_positives': int(conf_matrix[0, 1]),
+            'false_negatives': int(conf_matrix[1, 0]),
+            'true_positives': int(conf_matrix[1, 1])
+        }
+        
+        conf_matrix_file = os.path.join(eval_output_dir, f"confusion_matrix_{timestamp}.json")
+        with open(conf_matrix_file, 'w') as f:
+            json.dump(conf_matrix_data, f, indent=2)
+        print(f"✅ 混淆矩阵已保存: {conf_matrix_file}")
+        
+    except Exception as e:
+        print(f"⚠️ 分类报告保存失败: {e}")
+    
+    # 3. 保存预测结果（样本）
+    try:
+        # 保存预测概率分布
+        pred_results = {
+            'true_labels': y_va.tolist() if hasattr(y_va, 'tolist') else list(y_va),
+            'predicted_probabilities': y_pred_proba.tolist() if hasattr(y_pred_proba, 'tolist') else list(y_pred_proba),
+            'predicted_binary': y_pred_binary.tolist() if hasattr(y_pred_binary, 'tolist') else list(y_pred_binary)
+        }
+        
+        # 只保存前10000个样本以节省空间
+        if len(pred_results['true_labels']) > 10000:
+            pred_results = {
+                'true_labels': pred_results['true_labels'][:10000],
+                'predicted_probabilities': pred_results['predicted_probabilities'][:10000],
+                'predicted_binary': pred_results['predicted_binary'][:10000],
+                'note': 'Only first 10,000 samples saved for space efficiency'
+            }
+        
+        pred_results_file = os.path.join(eval_output_dir, f"prediction_results_{timestamp}.json")
+        with open(pred_results_file, 'w') as f:
+            json.dump(pred_results, f, indent=2)
+        print(f"✅ 预测结果已保存: {pred_results_file}")
+        
+    except Exception as e:
+        print(f"⚠️ 预测结果保存失败: {e}")
+    
+    # 4. 保存评估可视化
+    try:
+        from sklearn.metrics import precision_recall_curve, roc_curve
+        import matplotlib.pyplot as plt
+        
+        # 创建图表保存目录
+        plots_dir = os.path.join(eval_output_dir, "plots")
+        os.makedirs(plots_dir, exist_ok=True)
+        
+        # PR曲线
+        precision, recall, _ = precision_recall_curve(y_va, y_pred_proba)
+        
+        plt.figure(figsize=(10, 6))
+        plt.subplot(1, 2, 1)
+        plt.plot(recall, precision, marker='.')
+        plt.xlabel('Recall')
+        plt.ylabel('Precision')
+        plt.title(f'PR Curve (AUC={metrics["PR-AUC"]:.4f})')
+        plt.grid(True)
+        
+        # ROC曲线
+        fpr, tpr, _ = roc_curve(y_va, y_pred_proba)
+        
+        plt.subplot(1, 2, 2)
+        plt.plot(fpr, tpr, marker='.')
+        plt.plot([0, 1], [0, 1], 'k--')
+        plt.xlabel('False Positive Rate')
+        plt.ylabel('True Positive Rate')
+        plt.title(f'ROC Curve (AUC={metrics["ROC-AUC"]:.4f})')
+        plt.grid(True)
+        
+        plt.tight_layout()
+        
+        curves_plot_file = os.path.join(plots_dir, f"pr_roc_curves_{timestamp}.png")
+        plt.savefig(curves_plot_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ PR/ROC曲线图已保存: {curves_plot_file}")
+        
+        # 预测概率分布
+        plt.figure(figsize=(12, 4))
+        
+        plt.subplot(1, 3, 1)
+        plt.hist(y_pred_proba[y_va == 0], bins=50, alpha=0.7, label='Non-Spoofing', color='blue')
+        plt.hist(y_pred_proba[y_va == 1], bins=50, alpha=0.7, label='Spoofing', color='red')
+        plt.xlabel('Predicted Probability')
+        plt.ylabel('Frequency')
+        plt.title('Prediction Probability Distribution')
+        plt.legend()
+        plt.grid(True)
+        
+        # Precision@K可视化
+        k_values = [0.001, 0.005, 0.01, 0.02, 0.05, 0.1]
+        precisions_at_k = []
+        theoretical_maxs = []
+        
+        total_pos = y_va.sum()
+        for k in k_values:
+            k_int = max(1, int(len(y_va) * k))
+            top_k_idx = y_pred_proba.argsort()[::-1][:k_int]
+            prec_k = y_va.iloc[top_k_idx].mean() if hasattr(y_va, 'iloc') else y_va[top_k_idx].mean()
+            theoretical_max = min(total_pos / k_int, 1.0)
+            precisions_at_k.append(prec_k)
+            theoretical_maxs.append(theoretical_max)
+        
+        plt.subplot(1, 3, 2)
+        x_pos = range(len(k_values))
+        plt.bar([x - 0.2 for x in x_pos], precisions_at_k, 0.4, label='Actual', alpha=0.8)
+        plt.bar([x + 0.2 for x in x_pos], theoretical_maxs, 0.4, label='Theoretical Max', alpha=0.8)
+        plt.xlabel('Top K%')
+        plt.ylabel('Precision@K')
+        plt.title('Precision at Different K Values')
+        plt.xticks(x_pos, [f'{k*100:.1f}%' for k in k_values])
+        plt.legend()
+        plt.grid(True)
+        
+        # 混淆矩阵可视化
+        plt.subplot(1, 3, 3)
+        import seaborn as sns
+        sns.heatmap(conf_matrix, annot=True, fmt='d', cmap='Blues', 
+                   xticklabels=['Non-Spoofing', 'Spoofing'],
+                   yticklabels=['Non-Spoofing', 'Spoofing'])
+        plt.title('Confusion Matrix')
+        plt.ylabel('True Label')
+        plt.xlabel('Predicted Label')
+        
+        plt.tight_layout()
+        
+        analysis_plot_file = os.path.join(plots_dir, f"detailed_analysis_{timestamp}.png")
+        plt.savefig(analysis_plot_file, dpi=300, bbox_inches='tight')
+        plt.close()
+        print(f"✅ 详细分析图已保存: {analysis_plot_file}")
+        
+    except Exception as e:
+        print(f"⚠️ 可视化保存失败: {e}")
+    
+    # 5. 生成评估报告文档
+    try:
+        report_file = os.path.join(eval_output_dir, f"evaluation_report_{timestamp}.md")
+        
+        with open(report_file, 'w', encoding='utf-8') as f:
+            f.write(f"""# Spoofing Detection Model Evaluation Report
+
+## 实验信息
+- **实验时间**: {datetime.now().strftime("%Y-%m-%d %H:%M:%S")}
+- **模型方法**: {method_name}
+- **训练时间**: {results['training_time']:.1f}秒
+- **特征数量**: {results['n_features']}
+
+## 数据分布
+- **训练集**: {results['train_samples']:,} 样本 ({results['train_positive']:,} 正样本, {results['train_positive']/results['train_samples']*100:.3f}%)
+- **验证集**: {results['valid_samples']:,} 样本 ({results['valid_positive']:,} 正样本, {results['valid_positive']/results['valid_samples']*100:.3f}%)
+
+## 核心指标
+- **PR-AUC**: {metrics['PR-AUC']:.6f}
+- **ROC-AUC**: {metrics['ROC-AUC']:.6f}
+
+## Precision@K 分析
+""")
+            
+            for k in [0.001, 0.005, 0.01, 0.05]:
+                if f'Precision@{k*100:.1f}%' in metrics:
+                    prec = metrics[f'Precision@{k*100:.1f}%']
+                    max_prec = metrics[f'Precision@{k*100:.1f}%_max']
+                    achievement = metrics[f'Precision@{k*100:.1f}%_achievement']
+                    f.write(f"- **K={k*100:4.1f}%**: {prec:.6f} / {max_prec:.6f} = {achievement*100:5.1f}% 达成率\n")
+            
+            f.write(f"""
+## 混淆矩阵
+- **True Negatives**: {conf_matrix_data['true_negatives']:,}
+- **False Positives**: {conf_matrix_data['false_positives']:,}
+- **False Negatives**: {conf_matrix_data['false_negatives']:,}
+- **True Positives**: {conf_matrix_data['true_positives']:,}
+
+## 训练参数
+```json
+{json.dumps(vars(args), indent=2)}
+```
+
+## 文件说明
+- `evaluation_results_{timestamp}.json`: 基础评估指标
+- `classification_report_{timestamp}.json`: 详细分类报告
+- `confusion_matrix_{timestamp}.json`: 混淆矩阵数据
+- `prediction_results_{timestamp}.json`: 预测结果样本
+- `plots/pr_roc_curves_{timestamp}.png`: PR和ROC曲线图
+- `plots/detailed_analysis_{timestamp}.png`: 详细分析图表
+
+## 使用建议
+基于当前结果，建议：
+""")
+            
+            # 根据结果给出建议
+            pr_auc = metrics['PR-AUC']
+            if pr_auc >= 0.3:
+                f.write("- ✅ 模型性能良好，可以投入使用\n")
+            elif pr_auc >= 0.1:
+                f.write("- ⚠️ 模型性能中等，建议进一步优化\n")
+            else:
+                f.write("- ❌ 模型性能较差，需要重新设计特征工程和算法\n")
+            
+            if metrics.get('Precision@0.1%', 0) >= 0.5:
+                f.write("- ✅ Top 0.1% 精度良好，适合高置信度预警\n")
+            else:
+                f.write("- ⚠️ Top 0.1% 精度不足，建议调整决策阈值\n")
+        
+        print(f"✅ 评估报告已保存: {report_file}")
+        
+    except Exception as e:
+        print(f"⚠️ 评估报告生成失败: {e}")
+    
+    # 同时保留原有的简单保存方式（向后兼容）
+    simple_results_file = os.path.join(args.data_root, "enhanced_results.json")
+    with open(simple_results_file, 'w') as f:
+        json.dump(results, f, indent=2)
+    print(f"✅ 兼容性结果文件已保存: {simple_results_file}")
+    
+    print(f"\n📁 所有评估结果已保存到目录: {eval_output_dir}")
+    print(f"📋 查看完整报告: {report_file}")
     
     # Save model and features for analysis
     print("\n💾 保存模型供分析脚本使用...")
@@ -888,8 +1150,7 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
+  --sampling_method "none" \
   --use_ensemble \
-  --optimize_params \
-  --n_trials 50
-  #--sampling_method "undersample" \
+  --eval_output_dir "results/my_evaluation_results"
 """

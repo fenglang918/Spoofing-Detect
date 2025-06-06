@@ -8,6 +8,14 @@ label_generator.py
 • 支持多种标签规则（R1, R2, 扩展规则）
 • 批量处理多日期数据
 • 模块化标签计算流水线
+
+重要修复说明:
+────────────────────────────────────────
+v2.1 - 修复开盘时间误标问题:
+• 扩展规则现在排除开盘时间段(09:30-10:00, 13:00-13:15)的正常大单
+• 异常时间检测改为集合竞价晚期(09:25-09:30)和午休时间
+• 激进定价在开盘时间需要更极端的价格偏离才触发
+• 综合标签策略更保守，避免将正常开盘活动误标为欺诈
 """
 
 import sys
@@ -148,8 +156,37 @@ def apply_enhanced_spoofing_rules_pandas(df: pd.DataFrame, r1_ms: int, r2_ms: in
         else:
             df['extreme_price_deviation'] = 0
         
-        # 扩展规则2: 激进定价
-        if all(col in df.columns for col in ['委托价格', 'bid1', 'ask1', '方向_委托']):
+        # 扩展规则2: 激进定价 (修复：在开盘时间段更保守)
+        if all(col in df.columns for col in ['委托价格', 'bid1', 'ask1', '方向_委托', '委托_datetime']):
+            df['委托_datetime'] = pd.to_datetime(df['委托_datetime'])
+            
+            # 开盘时间段
+            opening_periods = (
+                ((df['委托_datetime'].dt.time >= pd.to_datetime('09:30').time()) & 
+                 (df['委托_datetime'].dt.time <= pd.to_datetime('10:00').time())) |
+                ((df['委托_datetime'].dt.time >= pd.to_datetime('13:00').time()) & 
+                 (df['委托_datetime'].dt.time <= pd.to_datetime('13:15').time()))
+            )
+            
+            # 基础激进定价
+            basic_aggressive = (
+                ((df['方向_委托'] == '买') & (df['委托价格'] > df['ask1'])) |
+                ((df['方向_委托'] == '卖') & (df['委托价格'] < df['bid1']))
+            )
+            
+            # 开盘时间段需要更极端的价格偏离才标记
+            spread = df['ask1'] - df['bid1']
+            extreme_aggressive = (
+                ((df['方向_委托'] == '买') & (df['委托价格'] > df['ask1'] + spread * 0.5)) |
+                ((df['方向_委托'] == '卖') & (df['委托价格'] < df['bid1'] - spread * 0.5))
+            )
+            
+            df['aggressive_pricing'] = (
+                (opening_periods & extreme_aggressive) |  # 开盘时需要极端偏离
+                (~opening_periods & basic_aggressive)     # 非开盘时正常标准
+            ).astype(int)
+        elif all(col in df.columns for col in ['委托价格', 'bid1', 'ask1', '方向_委托']):
+            # 降级处理：没有时间信息时使用基础逻辑
             df['aggressive_pricing'] = (
                 (((df['方向_委托'] == '买') & (df['委托价格'] > df['ask1'])) |
                  ((df['方向_委托'] == '卖') & (df['委托价格'] < df['bid1'])))
@@ -157,51 +194,85 @@ def apply_enhanced_spoofing_rules_pandas(df: pd.DataFrame, r1_ms: int, r2_ms: in
         else:
             df['aggressive_pricing'] = 0
         
-        # 扩展规则3: 异常大单
-        if all(col in df.columns for col in ['委托数量', 'ticker']):
+        # 扩展规则3: 异常大单 (修复：排除开盘时间段的正常大单)
+        if all(col in df.columns for col in ['委托数量', 'ticker', '委托_datetime']):
+            # 识别开盘时间段（正常交易活跃期）
+            df['委托_datetime'] = pd.to_datetime(df['委托_datetime']) 
+            opening_periods = (
+                # 开盘前30分钟
+                ((df['委托_datetime'].dt.time >= pd.to_datetime('09:30').time()) & 
+                 (df['委托_datetime'].dt.time <= pd.to_datetime('10:00').time())) |
+                # 午盘开盘前15分钟  
+                ((df['委托_datetime'].dt.time >= pd.to_datetime('13:00').time()) & 
+                 (df['委托_datetime'].dt.time <= pd.to_datetime('13:15').time()))
+            )
+            
+            # 非开盘时间段的异常大单才标记
             df['abnormal_large_order'] = (
-                df['委托数量'] > df.groupby('ticker')['委托数量'].transform('quantile', 0.95)
+                (~opening_periods) &  # 排除开盘时间段
+                (df['委托数量'] > df.groupby('ticker')['委托数量'].transform('quantile', 0.95))
+            ).astype(int)
+        elif all(col in df.columns for col in ['委托数量', 'ticker']):
+            # 降级处理：没有时间信息时使用更高阈值
+            df['abnormal_large_order'] = (
+                df['委托数量'] > df.groupby('ticker')['委托数量'].transform('quantile', 0.98)
             ).astype(int)
         else:
             df['abnormal_large_order'] = 0
         
-        # 扩展规则4: 市场活跃时段异常
+        # 扩展规则4: 非正常交易时间异常活动 (修复：排除正常开盘收盘时间)
         if '委托_datetime' in df.columns:
             df['委托_datetime'] = pd.to_datetime(df['委托_datetime'])
-            market_open = ((df['委托_datetime'].dt.time >= pd.to_datetime('09:30').time()) & 
-                          (df['委托_datetime'].dt.time <= pd.to_datetime('09:45').time()))
-            market_close = ((df['委托_datetime'].dt.time >= pd.to_datetime('14:45').time()) & 
-                           (df['委托_datetime'].dt.time <= pd.to_datetime('15:00').time()))
+            # 改为检测非正常时间的异常活动
+            # 正常交易时间: 09:30-11:30, 13:00-15:00
+            # 异常时间: 盘前集合竞价晚期 09:25-09:30, 午休时间等
+            abnormal_time = (
+                # 集合竞价晚期异常活动
+                ((df['委托_datetime'].dt.time >= pd.to_datetime('09:25').time()) & 
+                 (df['委托_datetime'].dt.time < pd.to_datetime('09:30').time())) |
+                # 午休时间异常活动  
+                ((df['委托_datetime'].dt.time >= pd.to_datetime('11:30').time()) & 
+                 (df['委托_datetime'].dt.time < pd.to_datetime('13:00').time()))
+            )
             
             if '委托数量' in df.columns and 'ticker' in df.columns:
+                # 在异常时间段的大单才标记为可疑
                 df['volatile_period_anomaly'] = (
-                    (market_open | market_close) &
-                    (df['委托数量'] > df.groupby('ticker')['委托数量'].transform('median') * 3)
+                    abnormal_time &
+                    (df['委托数量'] > df.groupby('ticker')['委托数量'].transform('quantile', 0.9))
                 ).astype(int)
             else:
                 df['volatile_period_anomaly'] = 0
         else:
             df['volatile_period_anomaly'] = 0
         
-        # 综合扩展标签
+        # 综合扩展标签 (修复：更保守的标签策略)
         pattern_rules = ['extreme_price_deviation', 'aggressive_pricing', 'abnormal_large_order', 'volatile_period_anomaly']
         available_rules = [col for col in pattern_rules if col in df.columns]
         
         if available_rules:
-            # 宽松版本：任意规则触发
-            df['enhanced_spoofing_liberal'] = (df[available_rules].sum(axis=1) >= 1).astype(int)
+            # 保守版本：至少两个规则触发 (避免误标)
+            df['enhanced_spoofing_conservative'] = (df[available_rules].sum(axis=1) >= 2).astype(int)
             # 中等版本：多个规则触发
             df['enhanced_spoofing_moderate'] = (df[available_rules].sum(axis=1) >= 2).astype(int)
+            # 宽松版本：任意规则+基础规则，或多个规则
+            if 'y_label' in df.columns:
+                df['enhanced_spoofing_liberal'] = (
+                    (df['y_label'] == 1) | (df[available_rules].sum(axis=1) >= 2)
+                ).astype(int)
+            else:
+                df['enhanced_spoofing_liberal'] = (df[available_rules].sum(axis=1) >= 1).astype(int)
+            
             # 严格版本：大部分规则触发
             df['enhanced_spoofing_strict'] = (df[available_rules].sum(axis=1) >= 3).astype(int)
             
-            # 结合原始规则的综合标签
+            # 结合原始规则的综合标签 (更保守)
             if 'y_label' in df.columns:
                 df['enhanced_combined'] = (
-                    (df['y_label'] == 1) | (df['enhanced_spoofing_moderate'] == 1)
+                    (df['y_label'] == 1) | (df['enhanced_spoofing_conservative'] == 1)
                 ).astype(int)
             else:
-                df['enhanced_combined'] = df['enhanced_spoofing_moderate']
+                df['enhanced_combined'] = df['enhanced_spoofing_conservative']
         
         return df
         
@@ -432,7 +503,7 @@ class LabelGenerator:
             
             # 加载数据
             if self.backend == "polars":
-                df = pl.read_csv(input_path, try_parse_dates=True)
+                df = pl.read_csv(input_path, try_parse_dates=True, infer_schema_length=10000, ignore_errors=True)
             else:
                 df = pd.read_csv(input_path, parse_dates=["委托_datetime", "事件_datetime"], low_memory=False)
             
@@ -449,8 +520,8 @@ class LabelGenerator:
             # 生成标签
             df_labels = self.generate_labels_for_data(df, tickers=tickers)
             
-            # 提取标签列 (只保留主键 + 标签相关列)
-            key_cols = ["自然日", "ticker", "交易所委托号"]
+            # 提取标签列 (保留主键 + 时间信息 + 标签相关列)
+            key_cols = ["自然日", "ticker", "交易所委托号", "委托_datetime", "委托数量", "方向_委托"]
             
             if self.backend == "polars":
                 if isinstance(df_labels, pl.LazyFrame):

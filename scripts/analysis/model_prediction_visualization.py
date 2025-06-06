@@ -986,13 +986,13 @@ Usage example:
 说明: 限制生成的股票-日期组合图表数量，避免生成过多文件
 示例: 5 (最多生成5个图表)
 
-python scripts/analysis/model_prediction_visualization.py \\
-  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \\
-  --model_path "results/trained_models/spoofing_model_Enhanced_undersample_Ensemble.pkl" \\
-  --valid_regex "202505" \\
-  --output_dir "results/prediction_analysis" \\
-  --prob_threshold 0.1 \\
-  --top_k_percent 0.05 \\
+python scripts/analysis/model_prediction_visualization.py \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --model_path "results/trained_models/spoofing_model_Enhanced_undersample_Ensemble.pkl" \
+  --valid_regex "202505" \
+  --output_dir "results/prediction_analysis" \
+  --prob_threshold 0.01 \
+  --top_k_percent 0.005 \
   --max_plots 5
   
   
