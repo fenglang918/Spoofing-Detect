@@ -771,12 +771,114 @@ def main():
         **metrics
     }
     
-    # Save to JSON
+    # Save results to JSON
     import json
     results_file = os.path.join(args.data_root, "enhanced_results.json")
     with open(results_file, 'w') as f:
         json.dump(results, f, indent=2)
     print(f"Results saved to: {results_file}")
+    
+    # Save model and features for analysis
+    print("\n💾 保存模型供分析脚本使用...")
+    model_output_dir = os.path.join("results", "trained_models")
+    os.makedirs(model_output_dir, exist_ok=True)
+    
+    # 确定模型名称
+    model_name = f"spoofing_model_{results['method'].replace('+', '_').replace('(', '').replace(')', '').replace(',', '').replace('=', '').replace(' ', '_')}"
+    
+    try:
+        # 保存模型和特征
+        if args.use_ensemble:
+            # 集成模型：保存主要的LightGBM模型
+            if hasattr(model, 'fitted_models') and 'lgb' in model.fitted_models:
+                main_model = model.fitted_models['lgb']
+                model_path = os.path.join(model_output_dir, f"{model_name}.pkl")
+                
+                import pickle
+                with open(model_path, 'wb') as f:
+                    pickle.dump({
+                        'model': main_model,
+                        'ensemble_model': model,  # 完整集成模型
+                        'features': feature_cols,
+                        'model_type': 'ensemble_lgb',
+                        'results': results,
+                        'training_params': vars(args)
+                    }, f)
+                print(f"✅ 集成模型已保存: {model_path}")
+            else:
+                print("⚠️ 集成模型保存失败：未找到LightGBM子模型")
+        else:
+            # 单模型
+            model_path = os.path.join(model_output_dir, f"{model_name}.pkl")
+            
+            import pickle
+            with open(model_path, 'wb') as f:
+                pickle.dump({
+                    'model': model,
+                    'features': feature_cols,
+                    'model_type': 'lightgbm_single',
+                    'results': results,
+                    'training_params': vars(args)
+                }, f)
+            print(f"✅ 单模型已保存: {model_path}")
+        
+        # 保存特征列表
+        features_path = os.path.join(model_output_dir, f"{model_name}_features.json")
+        with open(features_path, 'w') as f:
+            json.dump(feature_cols, f, indent=2)
+        print(f"✅ 特征列表已保存: {features_path}")
+        
+        # 保存使用说明
+        readme_path = os.path.join(model_output_dir, "使用说明.md")
+        with open(readme_path, 'w', encoding='utf-8') as f:
+            f.write(f"""# 训练好的Spoofing检测模型
+
+## 模型信息
+- **模型文件**: `{model_name}.pkl`
+- **特征文件**: `{model_name}_features.json`
+- **模型类型**: {results['method']}
+- **特征数量**: {len(feature_cols)}
+- **训练时间**: {results['training_time']:.1f}s
+- **PR-AUC**: {results.get('PR-AUC', 'N/A')}
+- **ROC-AUC**: {results.get('ROC-AUC', 'N/A')}
+
+## 在操纵时段分析中使用
+
+### 使用pkl格式（推荐）：
+```bash
+python scripts/analysis/manipulation_detection_heatmap.py \\
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \\
+  --model_path "{os.path.relpath(model_path)}" \\
+  --output_dir "results/manipulation_analysis"
+
+```
+
+### 如果需要分离的特征文件：
+```bash
+python scripts/analysis/manipulation_detection_heatmap.py \\
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \\
+  --model_path "{os.path.relpath(model_path)}" \\
+  --model_features_path "{os.path.relpath(features_path)}" \\
+  --output_dir "results/manipulation_analysis"
+```
+
+## 训练参数
+```json
+{json.dumps(vars(args), indent=2)}
+```
+""")
+        print(f"✅ 使用说明已保存: {readme_path}")
+        
+        # 输出完整的分析命令
+        print(f"\n🎯 现在可以运行操纵时段分析:")
+        print(f"python scripts/analysis/manipulation_detection_heatmap.py \\")
+        print(f"  --data_root \"{args.data_root}\" \\")
+        print(f"  --model_path \"{os.path.relpath(model_path)}\" \\")
+        print(f"  --output_dir \"results/manipulation_analysis\"")
+        
+    except Exception as e:
+        print(f"⚠️ 模型保存失败: {e}")
+        print("模型未保存，但训练结果已记录")
 
 if __name__ == "__main__":
     main() 
