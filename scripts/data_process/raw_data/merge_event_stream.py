@@ -101,7 +101,93 @@ def add_order_features(merged_df: pd.DataFrame) -> pd.DataFrame:
     
     return merged_df
 
-def merge_one_stock(order_csv: Path, trade_csv: Path, ticker: str) -> pd.DataFrame:
+def filter_trading_hours(df: pd.DataFrame, time_col: str = "委托_datetime") -> pd.DataFrame:
+    """过滤交易时间段，排除集合竞价等特殊时段
+    
+    A股交易时间：
+    - 连续竞价：09:30-11:30, 13:00-14:57
+    - 排除集合竞价：09:15-09:30, 14:57-15:00
+    """
+    if df.empty:
+        return df
+    
+    # 确保时间列为 datetime 格式
+    df[time_col] = pd.to_datetime(df[time_col])
+    
+    # 提取时间部分
+    time_obj = df[time_col].dt.time
+    
+    # 定义连续竞价时间段
+    morning_trading = (
+        (time_obj >= pd.Timestamp("09:30").time()) & 
+        (time_obj <= pd.Timestamp("11:30").time())
+    )
+    
+    afternoon_trading = (
+        (time_obj >= pd.Timestamp("13:00").time()) & 
+        (time_obj <= pd.Timestamp("14:57").time())
+    )
+    
+    # 连续竞价时间段
+    continuous_trading = morning_trading | afternoon_trading
+    
+    # 统计过滤前后的数量
+    before_count = len(df)
+    df_filtered = df[continuous_trading].copy()
+    after_count = len(df_filtered)
+    
+    if before_count > 0:
+        filtered_ratio = (before_count - after_count) / before_count * 100
+        console.print(f"  [dim]时间过滤: {before_count:,} → {after_count:,} "
+                     f"(过滤 {filtered_ratio:.1f}%)[/dim]")
+    
+    return df_filtered
+
+def add_trading_time_features(df: pd.DataFrame, time_col: str = "委托_datetime") -> pd.DataFrame:
+    """添加交易时间段相关特征"""
+    if df.empty:
+        return df
+    
+    # 确保时间列为 datetime 格式
+    df[time_col] = pd.to_datetime(df[time_col])
+    time_obj = df[time_col].dt.time
+    
+    # 集合竞价标记
+    morning_auction = (
+        (time_obj >= pd.Timestamp("09:15").time()) & 
+        (time_obj < pd.Timestamp("09:30").time())
+    )
+    closing_auction = (
+        (time_obj >= pd.Timestamp("14:57").time()) & 
+        (time_obj <= pd.Timestamp("15:00").time())
+    )
+    df["in_auction"] = (morning_auction | closing_auction).astype(int)
+    
+    # 交易时段标记
+    morning_trading = (
+        (time_obj >= pd.Timestamp("09:30").time()) & 
+        (time_obj <= pd.Timestamp("11:30").time())
+    )
+    afternoon_trading = (
+        (time_obj >= pd.Timestamp("13:00").time()) & 
+        (time_obj <= pd.Timestamp("14:57").time())
+    )
+    df["in_morning"] = morning_trading.astype(int)
+    df["in_afternoon"] = afternoon_trading.astype(int)
+    
+    # 距离开市时间（秒）
+    market_open = df[time_col].dt.normalize() + pd.Timedelta("09:30:00")
+    seconds_since_open = (df[time_col] - market_open).dt.total_seconds()
+    df["seconds_since_market_open"] = seconds_since_open
+    
+    # 周期性时间特征（基于4.5小时交易时间）
+    day_seconds = 4.5 * 3600
+    df["time_sin"] = np.sin(2 * np.pi * seconds_since_open / day_seconds)
+    df["time_cos"] = np.cos(2 * np.pi * seconds_since_open / day_seconds)
+    
+    return df
+
+def merge_one_stock(order_csv: Path, trade_csv: Path, ticker: str, filter_hours: bool = True) -> pd.DataFrame:
     """单支股票：逐笔委托 + 逐笔成交 => 事件流（含存活时间）"""
     try:
         orders = read_csv_auto(order_csv, dtype=str)
@@ -194,9 +280,16 @@ def merge_one_stock(order_csv: Path, trade_csv: Path, ticker: str) -> pd.DataFra
     # 清理无用列
     merged = merged.loc[:, ~merged.columns.str.contains("^Unnamed")]
     
+    # 过滤交易时间段（可选）
+    if filter_hours:
+        merged = filter_trading_hours(merged)
+    
+    # 添加交易时间段特征
+    merged = add_trading_time_features(merged)
+    
     return merged
 
-def merge_one_day(date_dir: Path, watch_set: Set[str], out_root: Path) -> bool:
+def merge_one_day(date_dir: Path, watch_set: Set[str], out_root: Path, filter_hours: bool = True) -> bool:
     """
     处理单日：date_dir = base_data/YYYYMMDD
     输出 event_stream/YYYYMMDD/委托事件流.csv
@@ -241,7 +334,7 @@ def merge_one_day(date_dir: Path, watch_set: Set[str], out_root: Path) -> bool:
                 progress.advance(task)
                 continue
             
-            df = merge_one_stock(o_csv, t_csv, stk_dir.name)
+            df = merge_one_stock(o_csv, t_csv, stk_dir.name, filter_hours)
             if not df.empty:
                 # 统一的交易日期字段
                 df["自然日"] = trading_date
@@ -308,6 +401,10 @@ def main():
     parser.add_argument("--tickers", nargs="*", default=None, help="股票白名单，留空=全部")
     parser.add_argument("--output", help="输出根目录，默认为 {root}/../event_stream")
     parser.add_argument("--dates", nargs="*", help="指定处理日期，格式 YYYYMMDD")
+    parser.add_argument("--filter-hours", action="store_true", default=True, 
+                        help="过滤交易时间段，仅保留连续竞价时间 (默认开启)")
+    parser.add_argument("--no-filter-hours", dest="filter_hours", action="store_false",
+                        help="不过滤交易时间段，保留所有时间的数据")
     
     args = parser.parse_args()
 
@@ -323,6 +420,7 @@ def main():
     console.print(f"[dim]输入目录: {base}[/dim]")
     console.print(f"[dim]输出目录: {out_root}[/dim]")
     console.print(f"[dim]股票筛选: {list(watch_set) if watch_set else '全部'}[/dim]")
+    console.print(f"[dim]时间过滤: {'开启' if args.filter_hours else '关闭'}[/dim]")
 
     # 获取日期目录
     all_date_dirs = [p for p in base.iterdir() if p.is_dir() and re.fullmatch(r"\d{8}", p.name)]
@@ -346,7 +444,7 @@ def main():
     # 处理数据
     successful_days = 0
     for d in sorted(date_dirs):
-        if merge_one_day(d, watch_set, out_root):
+        if merge_one_day(d, watch_set, out_root, args.filter_hours):
             successful_days += 1
 
     # 总结
@@ -365,19 +463,31 @@ if __name__ == "__main__":
 """
 使用示例:
 
-# 处理所有日期、指定股票
+# 处理所有日期、指定股票（默认过滤交易时间）
 python scripts/data_process/raw_data/merge_event_stream.py \
     --root "/home/ma-user/code/fenglang/Spoofing Detect/data/base_data" \
     --tickers 000989.SZ 300233.SZ
+    --filter-hours
 
-# 处理指定日期
+# 处理指定日期，不过滤交易时间
 python scripts/data_process/raw_data/merge_event_stream.py \
     --root "/path/to/base_data" \
     --dates 20230301 20230302 \
-    --tickers 000001.SZ
+    --tickers 000001.SZ \
+    --no-filter-hours
+
+# 明确开启时间过滤（默认行为）
+python scripts/data_process/raw_data/merge_event_stream.py \
+    --root "/path/to/base_data" \
+    --filter-hours
 
 # 自定义输出目录
 python scripts/data_process/raw_data/merge_event_stream.py \
     --root "/path/to/base_data" \
     --output "/path/to/custom_output"
+
+注意：
+- 默认过滤集合竞价时间段（09:15-09:30, 14:57-15:00）
+- 仅保留连续竞价时间段（09:30-11:30, 13:00-14:57）
+- 使用 --no-filter-hours 可保留所有时间段的数据
 """ 

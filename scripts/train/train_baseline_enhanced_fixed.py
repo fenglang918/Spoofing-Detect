@@ -888,8 +888,8 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
-  --sampling_method "undersample" \
   --use_ensemble \
   --optimize_params \
   --n_trials 50
+  #--sampling_method "undersample" \
 """
