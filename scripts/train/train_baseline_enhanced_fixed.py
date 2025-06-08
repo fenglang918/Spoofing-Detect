@@ -585,32 +585,54 @@ def main():
     df_train = enhance_features(df_train)
     df_valid = enhance_features(df_valid)
     
-    # 使用严格的防泄露特征清理
-    print("🛡️ 应用严格的数据泄露防护...")
+    # 使用明确定义的列，避免数据泄露
+    print("🛡️ 使用明确定义的特征列...")
     
-    # 导入防泄露模块
+    # 导入列定义模块
     try:
         import sys
         from pathlib import Path
+        
+        # 导入特征列定义
         sys.path.append(str(Path(__file__).parent.parent / "data_process" / "features"))
-        from leakage_free_features import clean_features_for_training, validate_features_safety
+        from feature_generator import get_training_feature_columns, get_key_columns, get_leakage_risk_columns
         
-        # 清理训练数据
-        df_train_clean = clean_features_for_training(df_train, "y_label")
-        df_valid_clean = clean_features_for_training(df_valid, "y_label")
+        # 导入标签列定义
+        sys.path.append(str(Path(__file__).parent.parent / "data_process" / "labels"))
+        from label_generator import get_training_target_columns, get_label_columns
         
-        # 获取特征列（排除目标变量和ID列）
-        id_cols = ["自然日", "ticker", "交易所委托号", "y_label"]
-        feature_cols = [col for col in df_train_clean.columns if col not in id_cols]
+        # 获取可用于训练的特征列
+        feature_cols = get_training_feature_columns(include_enhanced=True)
         
-        print(f"✅ 防泄露清理完成，使用 {len(feature_cols)} 个安全特征")
+        # 获取实际存在的特征列
+        available_cols = df_train.columns.tolist()
+        actual_feature_cols = [col for col in feature_cols if col in available_cols]
         
-        # 更新数据框
-        df_train = df_train_clean
-        df_valid = df_valid_clean
+        # 检查缺失的重要特征
+        missing_features = [col for col in feature_cols if col not in available_cols]
+        if missing_features:
+            print(f"⚠️ 缺失 {len(missing_features)} 个定义的特征: {missing_features[:10]}{'...' if len(missing_features) > 10 else ''}")
+        
+        # 检查可能的泄露风险列
+        leakage_risk_cols = get_leakage_risk_columns()
+        potential_leakage = [col for col in available_cols if col in leakage_risk_cols]
+        if potential_leakage:
+            print(f"🚨 检测到潜在泄露风险列: {potential_leakage}")
+            # 从特征列中移除
+            actual_feature_cols = [col for col in actual_feature_cols if col not in potential_leakage]
+        
+        feature_cols = actual_feature_cols
+        print(f"✅ 使用 {len(feature_cols)} 个安全特征")
+        
+        # 显示特征类别统计
+        if len(feature_cols) > 0:
+            base_features = [col for col in feature_cols if col in available_cols and 
+                           any(base_col in col for base_col in ['mid_price', 'spread', 'log_qty', 'is_buy', 'time_', 'orders_', 'book_'])]
+            enhanced_features = [col for col in feature_cols if col not in base_features]
+            print(f"  基础特征: {len(base_features)}, 扩展特征: {len(enhanced_features)}")
         
     except ImportError as e:
-        print(f"⚠️ 无法导入防泄露模块，使用基础清理: {e}")
+        print(f"⚠️ 无法导入列定义模块，使用基础清理: {e}")
         
         # 基础清理：手动排除已知泄露特征
         leakage_cols = [
@@ -664,10 +686,10 @@ def main():
         base_params = {
             'objective': 'binary',
             'metric': 'average_precision',
-            'learning_rate': 0.05,
+            'learning_rate': 0.03,
             'num_leaves': 31,
             'max_depth': 6,
-            'n_estimators': 1000,
+            'n_estimators': 3000,
             'subsample': 0.8,
             'colsample_bytree': 0.8,
             'reg_alpha': 10,
@@ -1146,6 +1168,7 @@ if __name__ == "__main__":
     main() 
     
 """
+# 使用明确定义的特征和标签列进行训练
 python scripts/train/train_baseline_enhanced_fixed.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
@@ -1153,4 +1176,13 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --sampling_method "none" \
   --use_ensemble \
   --eval_output_dir "results/my_evaluation_results"
+
+# 列定义模块使用说明:
+# 特征列定义在: scripts/data_process/features/feature_generator.py
+# 标签列定义在: scripts/data_process/labels/label_generator.py
+# 
+# 主要函数：
+# - get_training_feature_columns(): 获取可用于训练的特征列
+# - get_training_target_columns(): 获取可用作目标变量的标签列
+# - get_leakage_risk_columns(): 获取有数据泄露风险的列
 """

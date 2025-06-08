@@ -31,6 +31,109 @@ from rich import print as rprint
 
 console = Console()
 
+# ────────────────────────────── 列定义 ──────────────────────────────
+
+# 主键列（用于数据合并和标识）
+KEY_COLUMNS = [
+    "自然日", 
+    "ticker", 
+    "交易所委托号"
+]
+
+# 时间列（不用于训练，但可能用于分析）
+TIME_COLUMNS = [
+    "委托_datetime", 
+    "事件_datetime"
+]
+
+# 元数据列（保存但不用于训练）
+METADATA_COLUMNS = [
+    "委托数量", 
+    "方向_委托", 
+    "委托价格",
+    "事件类型",
+    "存活时间_ms"
+]
+
+# 基础标签列（由基础规则生成）
+BASE_LABEL_COLUMNS = [
+    "flag_R1",           # R1规则：快速撤单
+    "flag_R2",           # R2规则：价格操纵  
+    "y_label"            # 基础综合标签 (R1 & R2)
+]
+
+# 扩展标签列（由扩展规则生成）
+ENHANCED_LABEL_COLUMNS = [
+    "extreme_price_deviation",      # 极端价格偏离
+    "aggressive_pricing",           # 激进定价
+    "abnormal_large_order",         # 异常大单
+    "volatile_period_anomaly",      # 异常时间段活动
+    "enhanced_spoofing_conservative", # 保守版扩展标签
+    "enhanced_spoofing_moderate",     # 中等版扩展标签  
+    "enhanced_spoofing_liberal",      # 宽松版扩展标签
+    "enhanced_spoofing_strict",       # 严格版扩展标签
+    "enhanced_combined"               # 综合标签
+]
+
+# 训练用的标签列（主要目标变量）
+TRAINING_TARGET_COLUMNS = [
+    "y_label",                        # 基础标签
+    "enhanced_spoofing_conservative", # 保守扩展标签
+    "enhanced_spoofing_moderate",     # 中等扩展标签
+    "enhanced_combined"               # 综合标签
+]
+
+# 所有标签列
+ALL_LABEL_COLUMNS = BASE_LABEL_COLUMNS + ENHANCED_LABEL_COLUMNS
+
+# 输出时需要保存的列（用于标签文件）
+LABEL_OUTPUT_COLUMNS = KEY_COLUMNS + TIME_COLUMNS + METADATA_COLUMNS + ALL_LABEL_COLUMNS
+
+def get_label_columns(include_enhanced: bool = True) -> List[str]:
+    """
+    获取标签列列表
+    
+    Args:
+        include_enhanced: 是否包含扩展标签
+        
+    Returns:
+        标签列列表
+    """
+    if include_enhanced:
+        return BASE_LABEL_COLUMNS + ENHANCED_LABEL_COLUMNS
+    else:
+        return BASE_LABEL_COLUMNS
+
+def get_training_target_columns() -> List[str]:
+    """获取可用于训练的目标变量列表"""
+    return TRAINING_TARGET_COLUMNS.copy()
+
+def get_key_columns() -> List[str]:
+    """获取主键列列表"""
+    return KEY_COLUMNS.copy()
+
+def get_metadata_columns() -> List[str]:
+    """获取元数据列列表"""
+    return METADATA_COLUMNS.copy()
+
+def get_time_columns() -> List[str]:
+    """获取时间列列表"""
+    return TIME_COLUMNS.copy()
+
+def get_label_output_columns(include_enhanced: bool = True) -> List[str]:
+    """
+    获取标签文件输出列列表
+    
+    Args:
+        include_enhanced: 是否包含扩展标签
+        
+    Returns:
+        输出列列表
+    """
+    columns = KEY_COLUMNS + TIME_COLUMNS + METADATA_COLUMNS
+    columns.extend(get_label_columns(include_enhanced))
+    return columns
+
 # ────────────────────────────── 标签生成核心函数 ──────────────────────────────
 
 def apply_basic_spoofing_rules_pandas(df: pd.DataFrame, r1_ms: int, r2_ms: int, r2_mult: float) -> pd.DataFrame:
@@ -520,20 +623,20 @@ class LabelGenerator:
             # 生成标签
             df_labels = self.generate_labels_for_data(df, tickers=tickers)
             
-            # 提取标签列 (保留主键 + 时间信息 + 标签相关列)
-            key_cols = ["自然日", "ticker", "交易所委托号", "委托_datetime", "委托数量", "方向_委托"]
-            
+            # 使用明确定义的列选择（避免启发式判断出错）
             if self.backend == "polars":
                 if isinstance(df_labels, pl.LazyFrame):
                     df_labels = df_labels.collect()
                 
-                # 获取标签相关列
-                label_cols = [col for col in df_labels.columns 
-                             if any(keyword in col.lower() for keyword in 
-                                   ['label', 'flag', 'spoofing', 'r1', 'r2']) and col not in key_cols]
+                # 获取实际存在的输出列
+                available_cols = df_labels.columns
+                final_cols = [col for col in get_label_output_columns(self.extended_rules) if col in available_cols]
                 
-                # 选择列
-                final_cols = key_cols + label_cols
+                # 确保关键列存在
+                missing_key_cols = [col for col in KEY_COLUMNS if col not in available_cols]
+                if missing_key_cols:
+                    self.console.print(f"[yellow]警告: 缺少关键列 {missing_key_cols}[/yellow]")
+                
                 df_final = df_labels.select(final_cols)
                 
                 # 保存结果
@@ -551,11 +654,14 @@ class LabelGenerator:
                 
             else:
                 # Pandas处理
-                label_cols = [col for col in df_labels.columns 
-                             if any(keyword in col.lower() for keyword in 
-                                   ['label', 'flag', 'spoofing', 'r1', 'r2']) and col not in key_cols]
+                available_cols = df_labels.columns.tolist()
+                final_cols = [col for col in get_label_output_columns(self.extended_rules) if col in available_cols]
                 
-                final_cols = key_cols + label_cols
+                # 确保关键列存在
+                missing_key_cols = [col for col in KEY_COLUMNS if col not in available_cols]
+                if missing_key_cols:
+                    self.console.print(f"[yellow]警告: 缺少关键列 {missing_key_cols}[/yellow]")
+                
                 df_final = df_labels[final_cols]
                 
                 # 保存结果

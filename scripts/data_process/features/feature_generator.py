@@ -50,6 +50,146 @@ try:
 except NameError:
     console = Console()
 
+# ────────────────────────────── 特征列定义 ──────────────────────────────
+
+# 主键列（用于数据合并和标识）
+KEY_COLUMNS = [
+    "自然日", 
+    "ticker", 
+    "交易所委托号"
+]
+
+# 时间列（不用于训练，但用于排序和窗口计算）
+# 注意：事件_datetime 属于未来信息，移至泄露风险列
+TIME_COLUMNS = [
+    "委托_datetime"
+]
+
+# 原始数据列（从委托事件流中直接获取，部分可用于特征工程）
+# 注意：删除有泄露风险的列
+RAW_DATA_COLUMNS = [
+    "委托价格", "委托数量", "方向_委托", "委托类型",
+    # 移除泄露风险列: "事件类型", "存活时间_ms", "成交价格", "成交数量", "事件_datetime"
+    "申买价1", "申卖价1", "申买量1", "申卖量1", "前收盘",
+    "bid1", "ask1", "bid_vol1", "ask_vol1", "prev_close",
+    "bid2", "ask2", "bid_vol2", "ask_vol2",
+    "bid3", "ask3", "bid_vol3", "ask_vol3",
+    "bid4", "ask4", "bid_vol4", "ask_vol4",
+    "bid5", "ask5", "bid_vol5", "ask_vol5"
+]
+
+# 基础特征列（由特征工程生成，基于feature_engineering.py中实际生成的特征）
+BASE_FEATURE_COLUMNS = [
+    # 价格相关特征
+    "mid_price", "spread", "pct_spread", "delta_mid", "price_dev_prevclose_bps",
+    # 数量和方向特征
+    "log_qty", "is_buy", 
+    # 时间特征
+    "time_sin", "time_cos", "in_auction", "seconds_since_market_open",
+    # 滚动窗口特征（只保留订单统计，移除基于未来信息的撤单/成交统计）
+    "orders_100ms", "orders_1s",
+    # 订单簿特征
+    "book_imbalance", "price_aggressiveness", "cluster_score",
+    # 价格位置特征（新增的可观测特征）
+    "at_bid", "at_ask", "inside_spread",
+    # 对数变换特征
+    "log_order_price", "log_bid1", "log_ask1", "log_bid_vol", "log_ask_vol", "log_order_amount"
+]
+
+# 扩展特征列（由扩展特征工程生成，基于calculate_enhanced_realtime_features实际生成的特征）
+ENHANCED_FEATURE_COLUMNS = [
+    # 生存时间特征
+    "z_survival",
+    # 价格动量特征  
+    "price_momentum_100ms", "spread_change",
+    # 订单密度特征
+    "order_density"
+]
+
+# 所有特征列（可用于模型训练）
+ALL_FEATURE_COLUMNS = BASE_FEATURE_COLUMNS + ENHANCED_FEATURE_COLUMNS
+
+# 不能用于训练的列（数据泄露风险）
+LEAKAGE_RISK_COLUMNS = [
+    "存活时间_ms",     # 未来信息：委托的最终存活时间
+    "事件_datetime",   # 未来信息：委托结束时间
+    "成交价格",        # 未来信息：实际成交价格
+    "成交数量",        # 未来信息：实际成交数量
+    "事件类型",        # 未来信息：委托最终事件类型（成交/撤单）
+    # 中间计算产生的泄露列
+    "is_cancel_event", # 基于事件类型计算，属于未来信息
+    "is_trade_event",  # 基于事件类型计算，属于未来信息
+    # 其他可能的泄露列
+    "finish_time", "final_survival_time_ms", "life_ms",
+    "exec_qty", "fill_ratio", "canceled", "total_events"
+]
+
+# 输出时需要保存的列（特征文件）
+FEATURE_OUTPUT_COLUMNS = KEY_COLUMNS + TIME_COLUMNS + RAW_DATA_COLUMNS + ALL_FEATURE_COLUMNS
+
+def get_feature_columns(include_enhanced: bool = True) -> List[str]:
+    """
+    获取特征列列表
+    
+    Args:
+        include_enhanced: 是否包含扩展特征
+        
+    Returns:
+        特征列列表
+    """
+    if include_enhanced:
+        return BASE_FEATURE_COLUMNS + ENHANCED_FEATURE_COLUMNS
+    else:
+        return BASE_FEATURE_COLUMNS.copy()
+
+def get_training_feature_columns(include_enhanced: bool = True) -> List[str]:
+    """
+    获取可用于训练的特征列列表（排除泄露风险列）
+    
+    Args:
+        include_enhanced: 是否包含扩展特征
+        
+    Returns:
+        安全的特征列列表
+    """
+    features = get_feature_columns(include_enhanced)
+    # 排除泄露风险列
+    safe_features = [col for col in features if col not in LEAKAGE_RISK_COLUMNS]
+    return safe_features
+
+def get_key_columns() -> List[str]:
+    """获取主键列列表"""
+    return KEY_COLUMNS.copy()
+
+def get_time_columns() -> List[str]:
+    """获取时间列列表"""
+    return TIME_COLUMNS.copy()
+
+def get_raw_data_columns() -> List[str]:
+    """获取原始数据列列表"""
+    return RAW_DATA_COLUMNS.copy()
+
+def get_leakage_risk_columns() -> List[str]:
+    """获取有数据泄露风险的列列表"""
+    return LEAKAGE_RISK_COLUMNS.copy()
+
+def get_feature_output_columns(include_enhanced: bool = True) -> List[str]:
+    """
+    获取特征文件输出列列表（排除泄露风险列）
+    
+    Args:
+        include_enhanced: 是否包含扩展特征
+        
+    Returns:
+        安全的输出列列表
+    """
+    columns = KEY_COLUMNS + TIME_COLUMNS + RAW_DATA_COLUMNS
+    columns.extend(get_feature_columns(include_enhanced))
+    
+    # 排除泄露风险列
+    safe_columns = [col for col in columns if col not in LEAKAGE_RISK_COLUMNS]
+    return safe_columns
+
 class FeatureGenerator:
     """特征生成器"""
     
@@ -83,6 +223,14 @@ class FeatureGenerator:
                     "description": "book_imbalance、price_aggressiveness等"
                 }
             ]
+            
+            # Polars后端目前扩展特征需要转换到pandas计算
+            if self.extended_features:
+                pipeline.append({
+                    "name": "扩展实时特征",
+                    "function": "calculate_enhanced_realtime_features_polars", 
+                    "description": "z_survival、价格动量、订单密度等 (转换到pandas计算)"
+                })
         else:
             pipeline = [
                 {
@@ -257,6 +405,21 @@ class FeatureGenerator:
                     else:
                         schema = data.schema
                     return calculate_order_book_pressure_polars(data, dict(schema))
+                elif func_name == "calculate_enhanced_realtime_features_polars":
+                    # Polars扩展特征：需要转换到pandas计算然后转回polars
+                    self.console.print("[dim]  转换到pandas计算扩展特征...[/dim]")
+                    if isinstance(data, pl.LazyFrame):
+                        pd_data = data.collect().to_pandas()
+                    else:
+                        pd_data = data.to_pandas()
+                    
+                    # 计算扩展特征
+                    enhanced_data = calculate_enhanced_realtime_features(pd_data)
+                    
+                    # 转回polars
+                    result = pl.from_pandas(enhanced_data)
+                    self.console.print("[dim]  扩展特征计算完成[/dim]")
+                    return result.lazy()
             else:
                 if func_name == "calc_realtime_features":
                     return calc_realtime_features(data)
@@ -325,15 +488,42 @@ class FeatureGenerator:
             # 生成特征
             df_features = self.generate_features_for_data(df, tickers=tickers)
             
+            # 使用明确定义的输出列（避免保存不需要的列）
+            if self.backend == "polars":
+                if isinstance(df_features, pl.LazyFrame):
+                    df_features = df_features.collect()
+                
+                # 获取实际存在的输出列
+                available_cols = df_features.columns
+                final_cols = [col for col in get_feature_output_columns(self.extended_features) 
+                             if col in available_cols]
+                
+                # 确保关键列存在
+                missing_key_cols = [col for col in KEY_COLUMNS if col not in available_cols]
+                if missing_key_cols:
+                    self.console.print(f"[yellow]警告: 缺少关键列 {missing_key_cols}[/yellow]")
+                
+                df_final = df_features.select(final_cols)
+            else:
+                # Pandas处理
+                available_cols = df_features.columns.tolist()
+                final_cols = [col for col in get_feature_output_columns(self.extended_features) 
+                             if col in available_cols]
+                
+                # 确保关键列存在
+                missing_key_cols = [col for col in KEY_COLUMNS if col not in available_cols]
+                if missing_key_cols:
+                    self.console.print(f"[yellow]警告: 缺少关键列 {missing_key_cols}[/yellow]")
+                
+                df_final = df_features[final_cols]
+            
             # 保存结果
             output_path.parent.mkdir(parents=True, exist_ok=True)
             
             if self.backend == "polars":
-                if isinstance(df_features, pl.LazyFrame):
-                    df_features = df_features.collect()
-                df_features.write_parquet(output_path)
+                df_final.write_parquet(output_path)
             else:
-                df_features.to_parquet(output_path, index=False)
+                df_final.to_parquet(output_path, index=False)
             
             # 显示统计信息
             if self.backend == "polars":

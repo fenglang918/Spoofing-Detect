@@ -76,19 +76,17 @@ def calc_realtime_features(df_pd: pd.DataFrame) -> pd.DataFrame:
     df_pd["orders_100ms"] = (df_pd.rolling("100ms", on="委托_datetime", closed='left')["委托_datetime"].count().fillna(0))
     df_pd["orders_1s"] = (df_pd.rolling("1s", on="委托_datetime", closed='left')["委托_datetime"].count().fillna(0))
     
-    # 新增：多尺度撤单统计（使用当前时刻之前的数据）
-    df_pd["is_cancel_event"] = (df_pd["事件类型"] == "撤单").astype(int)
-    df_pd["cancels_100ms"] = (df_pd.rolling("100ms", on="委托_datetime", closed='left')["is_cancel_event"].sum().fillna(0))
-    df_pd["cancels_1s"] = (df_pd.rolling("1s", on="委托_datetime", closed='left')["is_cancel_event"].sum().fillna(0))
-    df_pd["cancels_5s"] = (df_pd.rolling("5s", on="委托_datetime", closed='left')["is_cancel_event"].sum().fillna(0))
+    # 注意：移除基于"事件类型"的特征计算，因为这属于未来信息
+    # 改为使用委托时刻的可观测信息，如价格位置等
     
-    # 新增：撤单率指标
-    df_pd["cancel_ratio_100ms"] = (df_pd["cancels_100ms"] / (df_pd["orders_100ms"] + 1e-8)).fillna(0)
-    df_pd["cancel_ratio_1s"] = (df_pd["cancels_1s"] / (df_pd["orders_1s"] + 1e-8)).fillna(0)
-
-    # 成交统计（仅使用当前之前）
-    df_pd["is_trade_event"] = (df_pd["事件类型"] == "成交").astype(int)
-    df_pd["trades_1s"] = (df_pd.rolling("1s", on="委托_datetime", closed='left')["is_trade_event"].sum().fillna(0))
+    # 简化统计：只统计订单总数，不区分成交撤单（避免使用未来信息）
+    # 如果需要撤单统计，应该使用其他委托的历史撤单信息，而不是当前委托的事件类型
+    
+    # 价格位置特征（可观测）
+    df_pd["at_bid"] = (df_pd["委托价格"] <= df_pd["bid1"]).astype(int)
+    df_pd["at_ask"] = (df_pd["委托价格"] >= df_pd["ask1"]).astype(int)
+    df_pd["inside_spread"] = ((df_pd["委托价格"] > df_pd["bid1"]) & 
+                             (df_pd["委托价格"] < df_pd["ask1"])).astype(int)
 
     # Ensure '委托_datetime' is datetime
     df_pd['委托_datetime'] = pd.to_datetime(df_pd['委托_datetime'])
@@ -222,8 +220,7 @@ def calc_realtime_features_polars(df: pl.LazyFrame) -> pl.LazyFrame:
         pl.col("申买量1").alias("bid_vol1").cast(pl.Float64).fill_null(0),
         pl.col("申卖量1").alias("ask_vol1").cast(pl.Float64).fill_null(0),
         (pl.col("方向_委托") == "买").cast(pl.Int8).alias("is_buy"),
-        (pl.col("事件类型") == "撤单").cast(pl.Int8).alias("is_cancel_event"),
-        (pl.col("事件类型") == "成交").cast(pl.Int8).alias("is_trade_event"),
+        # 移除基于"事件类型"的特征，因为这属于未来信息
         # 对数变换：处理尺度过大的特征
         pl.col("委托数量").log1p().alias("log_qty"),
         pl.col("委托价格").cast(pl.Float64).log1p().alias("log_order_price"),
@@ -285,27 +282,21 @@ def calc_realtime_features_polars(df: pl.LazyFrame) -> pl.LazyFrame:
             pl.col("ts_ns").set_sorted().alias("ts_ns_sorted")
         ])
 
-        # 修正滚动窗口：仅使用当前时刻之前的数据
+        # 修正滚动窗口：只统计订单数，不使用未来信息
         orders_100ms_expr = pl.count().rolling(index_column="ts_ns_sorted", period="100ms", closed="left").fill_null(0)
         orders_1s_expr = pl.count().rolling(index_column="ts_ns_sorted", period="1s", closed="left").fill_null(0)
-        cancels_100ms_expr = pl.col("is_cancel_event").sum().rolling(index_column="ts_ns_sorted", period="100ms", closed="left").fill_null(0)
-        cancels_1s_expr = pl.col("is_cancel_event").sum().rolling(index_column="ts_ns_sorted", period="1s", closed="left").fill_null(0)
-        cancels_5s_expr = pl.col("is_cancel_event").sum().rolling(index_column="ts_ns_sorted", period="5s", closed="left").fill_null(0)
-        trades_1s_expr = pl.col("is_trade_event").sum().rolling(index_column="ts_ns_sorted", period="1s", closed="left").fill_null(0)
         
         df = df.with_columns([
             orders_100ms_expr.alias("orders_100ms"),
             orders_1s_expr.alias("orders_1s"),
-            cancels_100ms_expr.alias("cancels_100ms"),
-            cancels_1s_expr.alias("cancels_1s"),
-            cancels_5s_expr.alias("cancels_5s"),
-            trades_1s_expr.alias("trades_1s"),
         ]).drop("ts_ns_sorted")
         
-        # 撤单率计算
+        # 添加价格位置特征（可观测信息）
         df = df.with_columns([
-            (pl.col("cancels_100ms") / (pl.col("orders_100ms") + 1e-8)).fill_null(0).alias("cancel_ratio_100ms"),
-            (pl.col("cancels_1s") / (pl.col("orders_1s") + 1e-8)).fill_null(0).alias("cancel_ratio_1s"),
+            (pl.col("委托价格") <= pl.col("bid1")).cast(pl.Int8).alias("at_bid"),
+            (pl.col("委托价格") >= pl.col("ask1")).cast(pl.Int8).alias("at_ask"),
+            ((pl.col("委托价格") > pl.col("bid1")) & 
+             (pl.col("委托价格") < pl.col("ask1"))).cast(pl.Int8).alias("inside_spread"),
         ])
 
     except Exception as e:
@@ -313,12 +304,9 @@ def calc_realtime_features_polars(df: pl.LazyFrame) -> pl.LazyFrame:
         df = df.with_columns([
             pl.lit(0).cast(pl.UInt32).alias("orders_100ms"),
             pl.lit(0).cast(pl.UInt32).alias("orders_1s"),
-            pl.lit(0).cast(pl.Int8).alias("cancels_100ms"),
-            pl.lit(0).cast(pl.Int8).alias("cancels_1s"),
-            pl.lit(0).cast(pl.Int8).alias("cancels_5s"),
-            pl.lit(0).cast(pl.Int8).alias("trades_1s"),
-            pl.lit(0.0).alias("cancel_ratio_100ms"),
-            pl.lit(0.0).alias("cancel_ratio_1s"),
+            pl.lit(0).cast(pl.Int8).alias("at_bid"),
+            pl.lit(0).cast(pl.Int8).alias("at_ask"),
+            pl.lit(0).cast(pl.Int8).alias("inside_spread"),
         ])
     return df
 
@@ -375,9 +363,8 @@ def get_ml_friendly_features() -> List[str]:
         # 时间特征
         "time_sin", "time_cos", "in_auction", "seconds_since_market_open",
         
-        # 滚动统计特征
-        "orders_100ms", "orders_1s", "cancels_100ms", "cancels_1s", 
-        "cancels_5s", "trades_1s", "cancel_ratio_100ms", "cancel_ratio_1s",
+        # 滚动统计特征（移除基于未来信息的特征）
+        "orders_100ms", "orders_1s",
         
         # 复合特征
         "cluster_score", "price_dev_prevclose_bps"
@@ -406,5 +393,5 @@ def get_feature_groups() -> Dict[str, List[str]]:
         "金额特征": ["委托金额", "log_order_amount"],
         "时间特征": ["time_sin", "time_cos", "in_auction", "seconds_since_market_open", "存活时间_ms"],
         "技术特征": ["spread", "pct_spread", "delta_mid", "price_aggressiveness", "book_imbalance", "cluster_score"],
-        "统计特征": ["orders_100ms", "orders_1s", "cancels_100ms", "cancels_1s", "cancels_5s", "trades_1s", "cancel_ratio_100ms", "cancel_ratio_1s"]
+        "统计特征": ["orders_100ms", "orders_1s", "at_bid", "at_ask", "inside_spread"]
     } 

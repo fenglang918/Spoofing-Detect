@@ -876,6 +876,163 @@ Median Probability: {df_predictions['predicted_proba'].median():.4f}"""
         return None
 
 
+def plot_monthly_summary(df_predictions, month_str, output_dir, prob_threshold=0.1, top_k_percent=0.05):
+    """生成整个月的汇总图表"""
+    print(f"📊 Creating monthly summary visualization for {month_str}...")
+    
+    os.makedirs(output_dir, exist_ok=True)
+    
+    try:
+        # 按日期聚合数据
+        daily_stats = df_predictions.groupby('自然日').agg({
+            'y_label': ['count', 'sum'],
+            'predicted_proba': ['mean', 'max', 'std'],
+            'predicted_binary': 'sum'
+        }).round(4)
+        
+        # 展平列名
+        daily_stats.columns = ['_'.join(col).strip() for col in daily_stats.columns.values]
+        daily_stats = daily_stats.reset_index()
+        
+        # 转换日期
+        daily_stats['date'] = pd.to_datetime(daily_stats['自然日'].astype(str), format='%Y%m%d')
+        daily_stats = daily_stats.sort_values('date')
+        
+        # 计算每日统计
+        daily_stats['anomaly_rate'] = daily_stats['y_label_sum'] / daily_stats['y_label_count']
+        daily_stats['pred_anomaly_rate'] = daily_stats['predicted_binary_sum'] / daily_stats['y_label_count']
+        
+        # 创建图表
+        fig, ((ax1, ax2), (ax3, ax4)) = plt.subplots(2, 2, figsize=(20, 16))
+        
+        # 1. 每日真实异常数量和预测异常数量
+        ax1.plot(daily_stats['date'], daily_stats['y_label_sum'], 'ro-', 
+                label='Real Anomalies', linewidth=2, markersize=6)
+        ax1.plot(daily_stats['date'], daily_stats['predicted_binary_sum'], 'bo-', 
+                label='Predicted Anomalies', linewidth=2, markersize=6)
+        ax1.set_title(f'Daily Anomaly Counts - {month_str}', fontsize=14, fontweight='bold')
+        ax1.set_ylabel('Anomaly Count')
+        ax1.legend()
+        ax1.grid(True, alpha=0.3)
+        ax1.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        plt.setp(ax1.xaxis.get_majorticklabels(), rotation=45)
+        
+        # 2. 每日异常率
+        ax2.plot(daily_stats['date'], daily_stats['anomaly_rate'] * 100, 'r-', 
+                label='Real Anomaly Rate', linewidth=2)
+        ax2.plot(daily_stats['date'], daily_stats['pred_anomaly_rate'] * 100, 'b--', 
+                label='Predicted Anomaly Rate', linewidth=2)
+        ax2.set_title(f'Daily Anomaly Rates - {month_str}', fontsize=14, fontweight='bold')
+        ax2.set_ylabel('Anomaly Rate (%)')
+        ax2.legend()
+        ax2.grid(True, alpha=0.3)
+        ax2.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        plt.setp(ax2.xaxis.get_majorticklabels(), rotation=45)
+        
+        # 3. 每日平均预测概率
+        ax3.plot(daily_stats['date'], daily_stats['predicted_proba_mean'], 'g-', 
+                linewidth=2, label='Mean Prediction Probability')
+        ax3.fill_between(daily_stats['date'], 
+                        daily_stats['predicted_proba_mean'] - daily_stats['predicted_proba_std'],
+                        daily_stats['predicted_proba_mean'] + daily_stats['predicted_proba_std'],
+                        alpha=0.3, color='green')
+        ax3.axhline(y=prob_threshold, color='orange', linestyle=':', alpha=0.7, 
+                   label=f'Threshold {prob_threshold}')
+        ax3.set_title(f'Daily Average Prediction Probability - {month_str}', fontsize=14, fontweight='bold')
+        ax3.set_ylabel('Prediction Probability')
+        ax3.legend()
+        ax3.grid(True, alpha=0.3)
+        ax3.xaxis.set_major_formatter(mdates.DateFormatter('%m-%d'))
+        plt.setp(ax3.xaxis.get_majorticklabels(), rotation=45)
+        
+        # 4. 月度统计总结
+        total_samples = len(df_predictions)
+        total_real_anomalies = int(df_predictions['y_label'].sum())
+        total_pred_anomalies = int(df_predictions['predicted_binary'].sum())
+        overall_anomaly_rate = total_real_anomalies / total_samples * 100
+        
+        # 按股票统计
+        if 'ticker' in df_predictions.columns:
+            ticker_stats = df_predictions.groupby('ticker').agg({
+                'y_label': ['count', 'sum'],
+                'predicted_proba': 'mean'
+            }).round(4)
+            ticker_stats.columns = ['_'.join(col).strip() for col in ticker_stats.columns.values]
+            
+            # 柱状图显示各股票的异常情况
+            tickers = ticker_stats.index.tolist()
+            real_counts = ticker_stats['y_label_sum'].tolist()
+            
+            x_pos = np.arange(len(tickers))
+            ax4.bar(x_pos, real_counts, alpha=0.7, color='red', label='Real Anomalies')
+            ax4.set_xlabel('Stock Ticker')
+            ax4.set_ylabel('Anomaly Count')
+            ax4.set_title(f'Anomaly Count by Stock - {month_str}', fontsize=14, fontweight='bold')
+            ax4.set_xticks(x_pos)
+            ax4.set_xticklabels(tickers, rotation=45)
+            ax4.grid(True, alpha=0.3)
+            ax4.legend()
+        else:
+            # 如果没有股票信息，显示文本统计
+            stats_text = f"""Monthly Summary Statistics:
+
+Total Samples: {total_samples:,}
+Real Anomalies: {total_real_anomalies:,}
+Predicted Anomalies: {total_pred_anomalies:,}
+Overall Anomaly Rate: {overall_anomaly_rate:.3f}%
+
+Trading Days: {len(daily_stats)}
+Avg Daily Samples: {total_samples/len(daily_stats):.0f}
+Avg Daily Anomalies: {total_real_anomalies/len(daily_stats):.1f}"""
+            
+            ax4.text(0.1, 0.9, stats_text, transform=ax4.transAxes, fontsize=12,
+                    verticalalignment='top', bbox=dict(boxstyle='round', facecolor='lightblue'))
+            ax4.set_title(f'Monthly Statistics Summary - {month_str}', fontsize=14, fontweight='bold')
+            ax4.axis('off')
+        
+        plt.suptitle(f'Monthly Anomaly Detection Summary - {month_str}', fontsize=18, fontweight='bold')
+        plt.tight_layout()
+        
+        output_file = os.path.join(output_dir, f'monthly_summary_{month_str}.png')
+        plt.savefig(output_file, dpi=300, bbox_inches='tight')
+        print(f"✅ Monthly summary saved: {output_file}")
+        
+        plt.close()
+        
+        # 生成月度汇总报告
+        monthly_report = f"""# Monthly Summary Report - {month_str}
+
+## Overall Statistics
+- **Total Samples**: {total_samples:,}
+- **Real Anomalies**: {total_real_anomalies:,} ({overall_anomaly_rate:.3f}%)
+- **Predicted Anomalies**: {total_pred_anomalies:,}
+- **Trading Days**: {len(daily_stats)}
+
+## Daily Statistics
+- **Average Daily Samples**: {total_samples/len(daily_stats):.0f}
+- **Average Daily Anomalies**: {total_real_anomalies/len(daily_stats):.1f}
+- **Max Daily Anomalies**: {daily_stats['y_label_sum'].max()}
+- **Min Daily Anomalies**: {daily_stats['y_label_sum'].min()}
+
+## Performance Summary
+- **Average Prediction Probability**: {df_predictions['predicted_proba'].mean():.6f}
+- **Max Prediction Probability**: {df_predictions['predicted_proba'].max():.6f}
+- **Prediction Standard Deviation**: {df_predictions['predicted_proba'].std():.6f}
+"""
+        
+        report_file = os.path.join(output_dir, f'monthly_summary_report_{month_str}.md')
+        with open(report_file, 'w', encoding='utf-8') as f:
+            f.write(monthly_report)
+        
+        print(f"✅ Monthly summary report saved: {report_file}")
+        
+        return fig
+        
+    except Exception as e:
+        plt.close('all')
+        raise RuntimeError(f"Failed to create monthly summary: {str(e)}")
+
+
 def main():
     parser = argparse.ArgumentParser(description="Model Prediction and Visualization Analysis")
     parser.add_argument("--data_root", required=True, help="Data root directory")
@@ -956,8 +1113,18 @@ def main():
         # 5. Generate summary report
         generate_summary_report(df_predictions, model_data, args.output_dir)
         
+        # 6. 生成月度汇总图表
+        print(f"\n📊 Generating monthly summary...")
+        month_str = args.valid_regex
+        try:
+            plot_monthly_summary(df_predictions, month_str, args.output_dir,
+                                prob_threshold=args.prob_threshold, top_k_percent=args.top_k_percent)
+        except Exception as e:
+            print(f"⚠️ Monthly summary failed: {e}")
+        
         print(f"\n✅ Analysis complete!")
-        print(f"   Generated {plot_count} visualization plots")
+        print(f"   Generated {plot_count} daily visualization plots")
+        print(f"   Generated monthly summary")
         print(f"   Output directory: {args.output_dir}")
         
     except Exception as e:
@@ -986,14 +1153,24 @@ Usage example:
 说明: 限制生成的股票-日期组合图表数量，避免生成过多文件
 示例: 5 (最多生成5个图表)
 
+# 生成整个月的分析（每日单独图表 + 月度汇总图表）
 python scripts/analysis/model_prediction_visualization.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --model_path "results/trained_models/spoofing_model_Enhanced_undersample_Ensemble.pkl" \
   --valid_regex "202505" \
-  --output_dir "results/prediction_analysis" \
+  --output_dir "results/prediction_visualization/202505_full_month" \
   --prob_threshold 0.01 \
   --top_k_percent 0.005 \
-  --max_plots 5
-  
-  
+  --max_plots 50
+
+输出文件说明:
+1. 每个股票-日期组合的单独图表: ticker_date_market_anomaly_detection.png
+2. 每个股票-日期的简单汇总: ticker_date_simple_summary.png  
+3. 月度汇总图表: monthly_summary_YYYYMM.png (包含4个子图)
+   - 每日异常数量趋势
+   - 每日异常率变化
+   - 每日平均预测概率
+   - 按股票的异常统计
+4. 月度汇总报告: monthly_summary_report_YYYYMM.md
+5. 整体预测报告: prediction_summary_report.md
 """ 
