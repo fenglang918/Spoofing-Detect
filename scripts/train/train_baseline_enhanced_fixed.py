@@ -424,6 +424,103 @@ def optimize_lgb_params(X_train, y_train, X_val, y_val, n_trials=50):
     print(f"Best PR-AUC: {study.best_value:.6f}")
     return study.best_params
 
+# ---------- Ticker Selection Functions -----------------------------------
+def filter_tickers_by_criteria(df, method="random", max_tickers=None):
+    """根据标准筛选股票"""
+    if method == "random":
+        # 随机选择
+        available_tickers = df['ticker'].unique()
+        if max_tickers and len(available_tickers) > max_tickers:
+            selected_tickers = np.random.choice(available_tickers, max_tickers, replace=False)
+            return selected_tickers.tolist()
+        return available_tickers.tolist()
+    
+    elif method == "by_volume":
+        # 按交易量选择（如果有相关字段）
+        if 'log_qty' in df.columns:
+            ticker_volumes = df.groupby('ticker')['log_qty'].sum().sort_values(ascending=False)
+        else:
+            print("⚠️ 没有交易量字段，使用样本数量作为代理")
+            ticker_volumes = df.groupby('ticker').size().sort_values(ascending=False)
+        
+        if max_tickers:
+            return ticker_volumes.head(max_tickers).index.tolist()
+        return ticker_volumes.index.tolist()
+    
+    elif method == "by_positive_samples":
+        # 按正样本数量选择
+        if 'y_label' in df.columns:
+            ticker_positive = df[df['y_label'] == 1].groupby('ticker').size().sort_values(ascending=False)
+            if max_tickers:
+                return ticker_positive.head(max_tickers).index.tolist()
+            return ticker_positive.index.tolist()
+        else:
+            print("⚠️ 没有标签字段，回退到随机选择")
+            return filter_tickers_by_criteria(df, "random", max_tickers)
+    
+    else:
+        return df['ticker'].unique().tolist()
+
+def apply_ticker_filtering(df, args):
+    """应用股票筛选逻辑"""
+    print(f"🔍 原始股票数量: {df['ticker'].nunique()}")
+    print(f"原始数据量: {len(df):,} 条")
+    
+    # 1. 从文件读取股票列表
+    if args.ticker_file:
+        if os.path.exists(args.ticker_file):
+            with open(args.ticker_file, 'r') as f:
+                file_tickers = [line.strip() for line in f if line.strip()]
+            print(f"📋 从文件读取到 {len(file_tickers)} 个股票代码")
+            df = df[df['ticker'].isin(file_tickers)]
+        else:
+            print(f"⚠️ 股票文件不存在: {args.ticker_file}")
+    
+    # 2. 应用包含列表
+    if args.include_tickers:
+        print(f"📌 筛选指定股票: {args.include_tickers}")
+        df = df[df['ticker'].isin(args.include_tickers)]
+        missing_tickers = set(args.include_tickers) - set(df['ticker'].unique())
+        if missing_tickers:
+            print(f"⚠️ 以下股票在数据中未找到: {missing_tickers}")
+    
+    # 3. 应用排除列表
+    if args.exclude_tickers:
+        print(f"🚫 排除股票: {args.exclude_tickers}")
+        df = df[~df['ticker'].isin(args.exclude_tickers)]
+    
+    # 4. 应用数量限制和选择方法
+    if args.max_tickers:
+        available_tickers = df['ticker'].unique()
+        if len(available_tickers) > args.max_tickers:
+            print(f"🎯 使用 {args.ticker_selection_method} 方法选择 {args.max_tickers} 个股票")
+            selected_tickers = filter_tickers_by_criteria(df, args.ticker_selection_method, args.max_tickers)
+            df = df[df['ticker'].isin(selected_tickers)]
+            print(f"✅ 选中股票: {selected_tickers}")
+    
+    print(f"🔍 筛选后股票数量: {df['ticker'].nunique()}")
+    print(f"筛选后数据量: {len(df):,} 条")
+    
+    # 显示股票分布统计
+    if df['ticker'].nunique() <= 20:
+        ticker_stats = df.groupby('ticker').agg({
+            'y_label': ['count', 'sum']  # 总样本数和正样本数
+        }).round(3)
+        ticker_stats.columns = ['样本数', '正样本数']
+        ticker_stats['正样本率%'] = (ticker_stats['正样本数'] / ticker_stats['样本数'] * 100).round(3)
+        print("\n📊 股票分布统计:")
+        for ticker, stats in ticker_stats.iterrows():
+            print(f"  {ticker}: {stats['样本数']:,} 样本, {stats['正样本数']:,} 正样本 ({stats['正样本率%']:.3f}%)")
+    else:
+        # 股票太多，只显示汇总统计
+        ticker_stats = df.groupby('ticker')['y_label'].agg(['count', 'sum'])
+        print(f"\n📊 股票分布汇总:")
+        print(f"  平均样本数: {ticker_stats['count'].mean():.0f}")
+        print(f"  平均正样本数: {ticker_stats['sum'].mean():.1f}")
+        print(f"  平均正样本率: {(ticker_stats['sum']/ticker_stats['count']).mean()*100:.3f}%")
+    
+    return df
+
 # ---------- Enhanced Evaluation ------------------------------------------
 def comprehensive_evaluation(y_true, y_pred_proba, y_pred_binary=None):
     """综合评估"""
@@ -486,6 +583,18 @@ def main():
     parser.add_argument("--class_weight_ratio", type=float, default=None, help="正样本权重比例，默认为负样本数/正样本数")
     parser.add_argument("--eval_output_dir", type=str, default=None, 
                        help="评估结果保存目录，默认为 results/evaluation_results")
+    
+    # 股票筛选相关参数
+    parser.add_argument("--include_tickers", type=str, nargs="*", default=None,
+                       help="指定包含的股票代码列表，例如: --include_tickers 000001.SZ 000002.SZ")
+    parser.add_argument("--exclude_tickers", type=str, nargs="*", default=None,
+                       help="指定排除的股票代码列表，例如: --exclude_tickers 000001.SZ 000002.SZ")
+    parser.add_argument("--ticker_file", type=str, default=None,
+                       help="从文件读取股票代码列表，每行一个股票代码")
+    parser.add_argument("--max_tickers", type=int, default=None,
+                       help="最大股票数量限制，随机选择指定数量的股票")
+    parser.add_argument("--ticker_selection_method", choices=["random", "by_volume", "by_positive_samples"], 
+                       default="random", help="股票选择方法：随机、按交易量、按正样本数")
     
     args = parser.parse_args()
     
@@ -571,6 +680,9 @@ def main():
             return
         print("Using original y_label as target variable")
         print(f"Target distribution: {df['y_label'].value_counts().to_dict()}")
+    
+    # 应用股票筛选
+    df = apply_ticker_filtering(df, args)
     
     # Split data
     train_mask = df["自然日"].astype(str).str.contains(args.train_regex)
@@ -759,9 +871,60 @@ def main():
     else:
         y_pred_proba = model.predict_proba(X_va)[:, 1]
     
+    # 整体评估
+    print("\n🌍 Overall Performance:")
     metrics = comprehensive_evaluation(y_va, y_pred_proba)
     for metric, value in metrics.items():
         print(f"{metric}: {value:.6f}")
+    
+    # 分股票评估
+    if 'ticker' in df_valid.columns and df_valid['ticker'].nunique() > 1:
+        print("\n📈 Per-Ticker Evaluation:")
+        ticker_metrics = {}
+        
+        for ticker in sorted(df_valid['ticker'].unique()):
+            ticker_mask = df_valid['ticker'] == ticker
+            y_ticker = y_va[ticker_mask]
+            pred_ticker = y_pred_proba[ticker_mask]
+            
+            if len(y_ticker) > 0 and y_ticker.sum() > 0:  # 确保有正样本
+                print(f"\n📊 {ticker}:")
+                ticker_eval = comprehensive_evaluation(y_ticker, pred_ticker)
+                ticker_metrics[ticker] = ticker_eval
+                
+                # 显示关键指标
+                key_metrics = ['PR-AUC', 'ROC-AUC', 'Precision@0.1%', 'Precision@0.5%', 'Precision@1.0%']
+                for metric in key_metrics:
+                    if metric in ticker_eval:
+                        print(f"  {metric}: {ticker_eval[metric]:.6f}")
+            else:
+                print(f"\n📊 {ticker}: 无正样本或数据不足，跳过评估")
+        
+        # 股票评估结果汇总表
+        if ticker_metrics:
+            print(f"\n📋 Per-Ticker Summary:")
+            print(f"{'Ticker':<12} {'PR-AUC':<8} {'ROC-AUC':<8} {'P@0.1%':<8} {'P@0.5%':<8} {'P@1.0%':<8} {'Samples':<8} {'Positive':<8}")
+            print("-" * 80)
+            
+            for ticker in sorted(ticker_metrics.keys()):
+                tm = ticker_metrics[ticker]
+                ticker_mask = df_valid['ticker'] == ticker
+                samples = ticker_mask.sum()
+                positive = y_va[ticker_mask].sum()
+                
+                print(f"{ticker:<12} "
+                      f"{tm.get('PR-AUC', 0):<8.4f} "
+                      f"{tm.get('ROC-AUC', 0):<8.4f} "
+                      f"{tm.get('Precision@0.1%', 0):<8.4f} "
+                      f"{tm.get('Precision@0.5%', 0):<8.4f} "
+                      f"{tm.get('Precision@1.0%', 0):<8.4f} "
+                      f"{samples:<8,} "
+                      f"{positive:<8,}")
+            
+            # 保存分股票评估结果
+            metrics['per_ticker_metrics'] = ticker_metrics
+    else:
+        print("\n⚠️ 单股票数据或无股票信息，跳过分股票评估")
     
     # Feature importance (for single models)
     if hasattr(model, 'feature_importances_'):
@@ -849,6 +1012,26 @@ def main():
             'false_negatives': int(conf_matrix[1, 0]),
             'true_positives': int(conf_matrix[1, 1])
         }
+        
+        # 如果有分股票评估，也为每个股票生成混淆矩阵
+        if 'per_ticker_metrics' in metrics:
+            ticker_confusion_matrices = {}
+            for ticker in metrics['per_ticker_metrics'].keys():
+                ticker_mask = df_valid['ticker'] == ticker
+                y_ticker = y_va[ticker_mask]
+                pred_ticker_binary = y_pred_binary[ticker_mask]
+                
+                if len(y_ticker) > 0:
+                    ticker_conf_matrix = confusion_matrix(y_ticker, pred_ticker_binary)
+                    ticker_confusion_matrices[ticker] = {
+                        'confusion_matrix': ticker_conf_matrix.tolist(),
+                        'true_negatives': int(ticker_conf_matrix[0, 0]),
+                        'false_positives': int(ticker_conf_matrix[0, 1]),
+                        'false_negatives': int(ticker_conf_matrix[1, 0]),
+                        'true_positives': int(ticker_conf_matrix[1, 1])
+                    }
+            
+            conf_matrix_data['per_ticker_confusion_matrices'] = ticker_confusion_matrices
         
         conf_matrix_file = os.path.join(eval_output_dir, f"confusion_matrix_{timestamp}.json")
         with open(conf_matrix_file, 'w') as f:
@@ -1016,7 +1199,44 @@ def main():
 - **False Positives**: {conf_matrix_data['false_positives']:,}
 - **False Negatives**: {conf_matrix_data['false_negatives']:,}
 - **True Positives**: {conf_matrix_data['true_positives']:,}
+""")
+            
+            # 如果有分股票评估结果，添加到报告中
+            if 'per_ticker_metrics' in metrics:
+                f.write(f"""
+## 分股票评估结果
 
+| 股票代码 | PR-AUC | ROC-AUC | P@0.1% | P@0.5% | P@1.0% | 样本数 | 正样本数 |
+|---------|--------|---------|---------|---------|---------|---------|----------|
+""")
+                for ticker in sorted(metrics['per_ticker_metrics'].keys()):
+                    tm = metrics['per_ticker_metrics'][ticker]
+                    ticker_mask = df_valid['ticker'] == ticker
+                    samples = ticker_mask.sum()
+                    positive = y_va[ticker_mask].sum()
+                    
+                    f.write(f"| {ticker} | {tm.get('PR-AUC', 0):.4f} | "
+                           f"{tm.get('ROC-AUC', 0):.4f} | "
+                           f"{tm.get('Precision@0.1%', 0):.4f} | "
+                           f"{tm.get('Precision@0.5%', 0):.4f} | "
+                           f"{tm.get('Precision@1.0%', 0):.4f} | "
+                           f"{samples:,} | {positive:,} |\n")
+                
+                f.write(f"""
+### 分股票混淆矩阵
+
+""")
+                if 'per_ticker_confusion_matrices' in conf_matrix_data:
+                    for ticker, ticker_conf in conf_matrix_data['per_ticker_confusion_matrices'].items():
+                        f.write(f"""
+**{ticker}:**
+- True Negatives: {ticker_conf['true_negatives']:,}
+- False Positives: {ticker_conf['false_positives']:,}
+- False Negatives: {ticker_conf['false_negatives']:,}
+- True Positives: {ticker_conf['true_positives']:,}
+""")
+            
+            f.write(f"""
 ## 训练参数
 ```json
 {json.dumps(vars(args), indent=2)}
@@ -1177,6 +1397,50 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --use_ensemble \
   --eval_output_dir "results/my_evaluation_results"
 
+# 指定股票代码进行训练的示例：
+
+# 1. 只训练特定股票
+python scripts/train/train_baseline_enhanced_fixed.py \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --train_regex "202503|202504" \
+  --valid_regex "202505" \
+  --include_tickers 000001.SZ 000002.SZ 600000.SH \
+  --sampling_method "undersample"
+
+# 2. 排除某些股票
+python scripts/train/train_baseline_enhanced_fixed.py \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --train_regex "202503|202504" \
+  --valid_regex "202505" \
+  --exclude_tickers 000001.SZ 000002.SZ \
+  --sampling_method "undersample"
+
+# 3. 从文件读取股票列表
+python scripts/train/train_baseline_enhanced_fixed.py \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --train_regex "202503|202504" \
+  --valid_regex "202505" \
+  --ticker_file "tickers.txt" \
+  --sampling_method "undersample"
+
+# 4. 限制股票数量并按交易量选择
+python scripts/train/train_baseline_enhanced_fixed.py \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --train_regex "202503|202504" \
+  --valid_regex "202505" \
+  --max_tickers 10 \
+  --ticker_selection_method "by_volume" \
+  --sampling_method "undersample"
+
+# 5. 按正样本数量选择股票
+python scripts/train/train_baseline_enhanced_fixed.py \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --train_regex "202503|202504" \
+  --valid_regex "202505" \
+  --max_tickers 5 \
+  --ticker_selection_method "by_positive_samples" \
+  --use_focal_loss
+
 # 列定义模块使用说明:
 # 特征列定义在: scripts/data_process/features/feature_generator.py
 # 标签列定义在: scripts/data_process/labels/label_generator.py
@@ -1185,4 +1449,11 @@ python scripts/train/train_baseline_enhanced_fixed.py \
 # - get_training_feature_columns(): 获取可用于训练的特征列
 # - get_training_target_columns(): 获取可用作目标变量的标签列
 # - get_leakage_risk_columns(): 获取有数据泄露风险的列
+
+# 股票筛选参数说明：
+# --include_tickers: 指定包含的股票代码列表
+# --exclude_tickers: 指定排除的股票代码列表  
+# --ticker_file: 从文件读取股票代码列表（每行一个）
+# --max_tickers: 最大股票数量限制
+# --ticker_selection_method: 股票选择方法（random/by_volume/by_positive_samples）
 """

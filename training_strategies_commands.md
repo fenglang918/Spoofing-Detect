@@ -220,64 +220,9 @@ python scripts/train/train_baseline_enhanced_fixed.py \
 
 ---
 
-## 🔄 7. 分股票训练策略 ⭐⭐⭐
+## 🔄 7. 组合策略
 
-### 7.1 分股票训练（推荐）⭐
-```bash
-# 为每只股票分别训练模型，更好地学习股票特有模式
-python scripts/train/train_by_stock.py \
-  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
-  --train_regex "202503|202504" \
-  --valid_regex "202505" \
-  --sampling_method "none" \
-  --min_samples 1000 \
-  --min_positive 10
-```
-**优势**: 每只股票独立建模，避免跨股票特征混淆，提供分股票性能分析
-
-### 7.2 分股票集成训练
-```bash
-# 分股票 + 集成学习，最高精度
-python scripts/train/train_by_stock.py \
-  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
-  --train_regex "202503|202504" \
-  --valid_regex "202505" \
-  --sampling_method "none" \
-  --use_ensemble \
-  --min_samples 500 \
-  --min_positive 5
-```
-
-### 7.3 分股票下采样训练
-```bash
-# 分股票 + 下采样，快速训练
-python scripts/train/train_by_stock.py \
-  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
-  --train_regex "202503|202504" \
-  --valid_regex "202505" \
-  --sampling_method "undersample" \
-  --min_samples 500 \
-  --min_positive 5
-```
-
-### 7.4 跨股票泛化测试
-```bash
-# 测试模型跨股票的泛化能力
-python scripts/train/train_by_stock.py \
-  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
-  --train_regex "202503|202504" \
-  --valid_regex "202505" \
-  --sampling_method "none" \
-  --use_ensemble \
-  --min_samples 2000 \
-  --min_positive 20
-```
-
----
-
-## 🔄 8. 组合策略（全股票混合）
-
-### 8.1 最优组合（生产推荐）
+### 7.1 最优组合（生产推荐）
 ```bash
 # 集成学习 + 无采样 + 原始标签
 python scripts/train/train_baseline_enhanced_fixed.py \
@@ -288,7 +233,7 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --use_ensemble
 ```
 
-### 8.2 高精度单模型
+### 7.2 高精度单模型
 ```bash
 # 单模型 + 无采样 + 超参数优化
 python scripts/train/train_baseline_enhanced_fixed.py \
@@ -300,7 +245,7 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --n_trials 50
 ```
 
-### 8.3 快速原型
+### 7.3 快速原型
 ```bash
 # 下采样 + 单模型，快速验证
 python scripts/train/train_baseline_enhanced_fixed.py \
@@ -312,15 +257,13 @@ python scripts/train/train_baseline_enhanced_fixed.py \
 
 ---
 
-## 📊 9. 性能对比表
+## 📊 8. 性能对比表
 
 | 策略 | 命令关键参数 | PR-AUC | P@0.1% | 训练时间 | 推荐指数 |
 |------|-------------|--------|--------|----------|----------|
-| 🥇 分股票集成 | `train_by_stock.py --use_ensemble` | TBD | TBD | TBD | ⭐⭐⭐⭐⭐ |
-| 🥈 分股票训练 | `train_by_stock.py --sampling_method none` | TBD | TBD | TBD | ⭐⭐⭐⭐⭐ |
-| 🥉 集成学习 | `--use_ensemble --sampling_method none` | 0.037 | 11.58% | 130s | ⭐⭐⭐⭐ |
-| 无采样单模型 | `--sampling_method none` | 0.035 | 13.37% | 63s | ⭐⭐⭐ |
-| 1:10下采样 | `--sampling_method undersample` | 0.031 | 8.74% | 60s | ⭐⭐⭐ |
+| 🥇 集成学习 | `--use_ensemble --sampling_method none` | 0.037 | 11.58% | 130s | ⭐⭐⭐⭐⭐ |
+| 🥈 无采样单模型 | `--sampling_method none` | 0.035 | 13.37% | 63s | ⭐⭐⭐⭐ |
+| 🥉 1:10下采样 | `--sampling_method undersample` | 0.031 | 8.74% | 60s | ⭐⭐⭐ |
 | 类别权重 | `--use_class_weight` | 0.019 | 1.85% | 66s | ⭐ |
 | Focal Loss | `--use_focal_loss` | 0.014 | 1.39% | 174s | ⭐ |
 
@@ -329,24 +272,16 @@ python scripts/train/train_baseline_enhanced_fixed.py \
 ## 💡 使用建议
 
 ### 🎯 生产环境
-- **主力**: 分股票训练策略（最推荐）⭐⭐⭐
-- **备选**: 集成学习策略
-- **快速**: 无采样单模型（更快的预测速度）
+- **主力**: 集成学习策略
+- **备选**: 无采样单模型（更快的预测速度）
 
 ### 🧪 实验阶段  
-- **快速验证**: 分股票下采样策略
-- **全面分析**: 分股票集成训练
+- **快速验证**: 下采样策略
 - **参数调优**: 超参数优化策略
 
 ### 🚫 不推荐
 - 类别权重策略（在此数据集上效果不佳）
 - Focal Loss策略（计算复杂，效果不佳）
-
-### ⭐ 分股票训练的优势
-- **避免特征混淆**: 每只股票独立建模，避免跨股票特征混淆
-- **性能分析**: 提供详细的分股票性能分析
-- **泛化测试**: 支持跨股票泛化能力测试
-- **个性化**: 学习每只股票特有的spoofing模式
 
 ---
 
@@ -368,24 +303,13 @@ python scripts/train/train_baseline_enhanced_fixed.py \
 | `--n_trials` | 优化试验次数 | 整数 | 50 |
 | `--use_enhanced_labels` | 使用增强标签 | flag | False |
 | `--label_type` | 增强标签类型 | liberal/strict | liberal |
-| `--min_samples` | 股票最小样本数（分股票训练） | 整数 | 1000 |
-| `--min_positive` | 股票最小正样本数（分股票训练） | 整数 | 10 |
 
 ---
 
 ## 🚀 快速开始
 
 ```bash
-# 1. 最佳性能（推荐生产使用）- 分股票训练
-python scripts/train/train_by_stock.py \
-  --data_root "/path/to/data" \
-  --train_regex "202503|202504" \
-  --valid_regex "202505" \
-  --sampling_method "none" \
-  --min_samples 1000 \
-  --min_positive 10
-
-# 2. 高性能集成（备选方案）
+# 1. 最佳性能（推荐生产使用）
 python scripts/train/train_baseline_enhanced_fixed.py \
   --data_root "/path/to/data" \
   --train_regex "202503|202504" \
@@ -393,14 +317,12 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --sampling_method "none" \
   --use_ensemble
 
-# 3. 快速验证（开发测试）
-python scripts/train/train_by_stock.py \
+# 2. 快速验证（开发测试）
+python scripts/train/train_baseline_enhanced_fixed.py \
   --data_root "/path/to/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
-  --sampling_method "undersample" \
-  --min_samples 500 \
-  --min_positive 5
+  --sampling_method "undersample"
 ```
 
 ---
