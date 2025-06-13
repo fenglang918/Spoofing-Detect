@@ -1,5 +1,0 @@
-{
-  "PR-AUC": 0.030194,
-  "Precision@0.1%": 0.0709,
-  "method": "LightGBM + Undersample"
-}

@@ -1,7 +1,0 @@
-{
-  "method": "Enhanced features + Undersample_composite_spoofing",
-  "PR-AUC": 1.0,
-  "Precision@0.1%": 0.750831,
-  "ROC-AUC": 1.0,
-  "success": true
-}

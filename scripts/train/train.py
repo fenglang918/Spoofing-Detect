@@ -1389,18 +1389,18 @@ if __name__ == "__main__":
     
 """
 # 使用明确定义的特征和标签列进行训练
-python scripts/train/train_baseline_enhanced_fixed.py \
+python scripts/train/train.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
   --sampling_method "none" \
   --use_ensemble \
-  --eval_output_dir "results/my_evaluation_results"
+  --eval_output_dir "results/train_results"
 
 # 指定股票代码进行训练的示例：
 
 # 1. 只训练特定股票
-python scripts/train/train_baseline_enhanced_fixed.py \
+python scripts/train/train.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
@@ -1408,7 +1408,7 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --sampling_method "undersample"
 
 # 2. 排除某些股票
-python scripts/train/train_baseline_enhanced_fixed.py \
+python scripts/train/train.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
@@ -1416,7 +1416,7 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --sampling_method "undersample"
 
 # 3. 从文件读取股票列表
-python scripts/train/train_baseline_enhanced_fixed.py \
+python scripts/train/train.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
@@ -1424,7 +1424,7 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --sampling_method "undersample"
 
 # 4. 限制股票数量并按交易量选择
-python scripts/train/train_baseline_enhanced_fixed.py \
+python scripts/train/train.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
@@ -1433,7 +1433,7 @@ python scripts/train/train_baseline_enhanced_fixed.py \
   --sampling_method "undersample"
 
 # 5. 按正样本数量选择股票
-python scripts/train/train_baseline_enhanced_fixed.py \
+python scripts/train/train.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --train_regex "202503|202504" \
   --valid_regex "202505" \
