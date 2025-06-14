@@ -1,6 +1,6 @@
 # Spoofing Detect
 
-该项目用于在高频交易数据中检测股票市場中的 "Spoofing" 行为。仓库提供了完整的数据处理与模型训练脚本，包括原始数据合并、特征生成、标签制作以及模型训练。
+该项目用于在高频交易数据中检测股票市场中的 "Spoofing" 行为，提供了从原始数据处理到模型训练与结果分析的完整流程脚本。
 
 ## 环境准备
 
@@ -8,12 +8,12 @@
 pip install -r requirements.txt
 ```
 
-- 建议使用 Python 3.8 及以上版本。
-- 依赖列表详见 `requirements.txt`。
+- 推荐使用 Python 3.8 及以上版本
+- 所需依赖详见 `requirements.txt`
 
 ## 数据目录结构
 
-数据目录示例可参考 `data/base_data_note.md`，示意结构如下：
+数据目录示例可参考 `data/base_data_note.md`，结构如下：
 
 ```
 data/
@@ -24,7 +24,7 @@ data/
 └── ...
 ```
 
-仓库提供 `data/exmaple` 目录作为样例。
+仓库提供 `data/example` 目录作为样例。示例股票列表见 `example_tickers.txt`。
 
 ## 快速开始
 
@@ -69,7 +69,11 @@ python scripts/train/train.py \
 
 更多特征处理细节请参阅 `scripts/data_process/features/README.md`。
 
+## 结果分析
 
+训练完成后可使用以下脚本生成预测可视化：
+
+```bash
 python scripts/analysis/model_prediction_visualization.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --model_path "results/trained_models/spoofing_model_Enhanced_none_Ensemble.pkl" \
@@ -87,3 +91,4 @@ python scripts/analysis/model_prediction_visualization.py \
   --prob_threshold 0.01 \
   --top_k_percent 0.005 \
   --max_plots 50
+```
