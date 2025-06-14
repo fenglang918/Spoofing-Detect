@@ -68,3 +68,22 @@ python scripts/train/train.py \
 ```
 
 更多特征处理细节请参阅 `scripts/data_process/features/README.md`。
+
+
+python scripts/analysis/model_prediction_visualization.py \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --model_path "results/trained_models/spoofing_model_Enhanced_none_Ensemble.pkl" \
+  --valid_regex "202505" \
+  --output_dir "results/prediction_visualization/202505_full_month" \
+  --prob_threshold 0.01 \
+  --top_k_percent 0.005 \
+  --max_plots 50
+
+python scripts/analysis/model_prediction_visualization.py \
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --model_path "results/trained_models/spoofing_model_Enhanced_none_Ensemble.pkl" \
+  --valid_regex "202504" \
+  --output_dir "results/prediction_visualization/202504_full_month" \
+  --prob_threshold 0.01 \
+  --top_k_percent 0.005 \
+  --max_plots 50
