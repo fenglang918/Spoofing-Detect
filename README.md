@@ -1,5 +1,7 @@
 # Spoofing Detection System
 
+项目地址: [https://github.com/fenglang918/Spoofing-Detect](https://github.com/fenglang918/Spoofing-Detect)
+
 一个基于机器学习的金融市场欺骗交易检测系统，专门用于识别和分析股票交易中的欺骗行为模式。
 
 ## 项目简介
@@ -60,7 +62,7 @@ Spoofing Detect/
 
 1. **克隆项目**
 ```bash
-git clone <repository-url>
+git clone https://github.com/fenglang918/Spoofing-Detect.git
 cd "Spoofing Detect"
 ```
 
