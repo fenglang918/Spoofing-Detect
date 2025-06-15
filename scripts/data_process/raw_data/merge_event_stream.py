@@ -463,10 +463,10 @@ if __name__ == "__main__":
 """
 使用示例:
 
-# 处理所有日期、指定股票（默认过滤交易时间）
+# 处理所有日期、指定股票（默认过滤集合竞价交易时间）
 python scripts/data_process/raw_data/merge_event_stream.py \
     --root "/home/ma-user/code/fenglang/Spoofing Detect/data/base_data" \
-    --tickers 000989.SZ 300233.SZ
+    --tickers 300233.SZ \
     --filter-hours
 
 # 处理指定日期，不过滤交易时间

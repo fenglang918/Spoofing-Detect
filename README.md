@@ -1,79 +1,34 @@
-# Spoofing Detect
-
-该项目用于在高频交易数据中检测股票市场中的 "Spoofing" 行为，提供了从原始数据处理到模型训练与结果分析的完整流程脚本。
-
-## 环境准备
-
-```bash
-pip install -r requirements.txt
-```
-
-- 推荐使用 Python 3.8 及以上版本
-- 所需依赖详见 `requirements.txt`
-
-## 数据目录结构
-
-数据目录示例可参考 `data/base_data_note.md`，结构如下：
-
-```
-data/
-├── base_data/           # 解压后的原始 CSV
-├── event_stream/        # 合并后的委托事件流
-├── features/            # 生成的特征文件
-├── labels_enhanced/     # 生成的标签文件
-└── ...
-```
-
-仓库提供 `data/example` 目录作为样例。示例股票列表见 `example_tickers.txt`。
-
-## 快速开始
-
-1. **合并原始数据**
-
-```bash
 python scripts/data_process/raw_data/merge_event_stream.py \
-    --root "/path/to/data/base_data" \
-    --tickers $(cat example_tickers.txt)
-```
+    --root "/home/ma-user/code/fenglang/Spoofing Detect/data/base_data" \
+    --tickers 300233.SZ \
+    --filter-hours
 
-2. **生成特征**
 
-```bash
-python scripts/data_process/features/feature_generator.py \
-    --input_dir "/path/to/data/event_stream" \
-    --output_dir "/path/to/data/features" \
-    --backend polars --extended
-```
-
-3. **生成标签**
-
-```bash
 python scripts/data_process/labels/label_generator.py \
-    --input_dir "/path/to/data/event_stream" \
-    --output_dir "/path/to/data/labels_enhanced" \
+    --input_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/event_stream" \
+    --output_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/labels_enhanced" \
     --r1_ms 1000 --r2_ms 1000 --r2_mult 1.0 \
-    --extended --backend pandas
-```
+    --tickers 300233.SZ \
+    --extended \
+    --backend polars
 
-4. **模型训练**
 
-```bash
+python scripts/data_process/features/feature_generator.py \
+    --input_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/event_stream" \
+    --output_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/features" \
+    --tickers 300233.SZ \
+    --backend polars \
+    --extended
+
+
 python scripts/train/train.py \
-    --data_root "/path/to/data" \
-    --train_regex "202503|202504" \
-    --valid_regex "202505" \
-    --sampling_method "none" \
-    --use_ensemble \
-    --eval_output_dir "results/train_results"
-```
+  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
+  --train_regex "202503|202504" \
+  --valid_regex "202505" \
+  --sampling_method "none" \
+  --use_ensemble \
+  --eval_output_dir "results/train_results"
 
-更多特征处理细节请参阅 `scripts/data_process/features/README.md`。
-
-## 结果分析
-
-训练完成后可使用以下脚本生成预测可视化：
-
-```bash
 python scripts/analysis/model_prediction_visualization.py \
   --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
   --model_path "results/trained_models/spoofing_model_Enhanced_none_Ensemble.pkl" \
@@ -82,13 +37,3 @@ python scripts/analysis/model_prediction_visualization.py \
   --prob_threshold 0.01 \
   --top_k_percent 0.005 \
   --max_plots 50
-
-python scripts/analysis/model_prediction_visualization.py \
-  --data_root "/home/ma-user/code/fenglang/Spoofing Detect/data" \
-  --model_path "results/trained_models/spoofing_model_Enhanced_none_Ensemble.pkl" \
-  --valid_regex "202504" \
-  --output_dir "results/prediction_visualization/202504_full_month" \
-  --prob_threshold 0.01 \
-  --top_k_percent 0.005 \
-  --max_plots 50
-```

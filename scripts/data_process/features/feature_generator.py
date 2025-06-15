@@ -702,6 +702,7 @@ if __name__ == "__main__":
 python scripts/data_process/features/feature_generator.py \
     --input_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/event_stream" \
     --output_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/features" \
+    --tickers 300233.SZ \
     --backend polars \
     --extended
 

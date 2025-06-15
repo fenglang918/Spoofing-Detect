@@ -884,13 +884,14 @@ python scripts/data_process/labels/label_generator.py \
     --r1_ms 50 --r2_ms 1000 --r2_mult 4.0 \
     --backend polars
 
-# 扩展标签规则 (包含更多欺诈检测模式)
+# 实际使用：扩展标签规则 (包含更多欺诈检测模式)
 python scripts/data_process/labels/label_generator.py \
     --input_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/event_stream" \
     --output_dir "/home/ma-user/code/fenglang/Spoofing Detect/data/labels_enhanced" \
     --r1_ms 1000 --r2_ms 1000 --r2_mult 1.0 \
+    --tickers 300233.SZ \
     --extended \
-    --backend pandas
+    --backend polars
 
 # 指定股票和日期
 python scripts/data_process/labels/label_generator.py \
