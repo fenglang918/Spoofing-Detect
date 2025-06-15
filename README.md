@@ -44,6 +44,7 @@ Spoofing Detect/
 ├── results/                   # 结果输出目录
 │   ├── trained_models/       # 训练好的模型
 │   └── prediction_visualization/ # 预测可视化结果
+├── latex/                     # LaTeX排版和报告
 ├── requirements.txt           # Python依赖
 └── example_tickers.txt       # 示例股票代码
 ```
